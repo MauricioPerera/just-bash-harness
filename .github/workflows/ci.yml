@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel in-flight runs on the same ref to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: typecheck + test + build + smokes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # The harness depends on `@rckflr/agent-skills-cli` via `file:../agent-skills-cli`.
+      # In CI we check out main of that repo as a sibling and build its dist
+      # before installing the harness. This catches integration breakage early.
+      #
+      # `just-bash-data` and `just-bash` come in transitively from
+      # agent-skills-cli's published deps (or its own `file:` deps in dev),
+      # so we don't check them out here.
+
+      - name: Checkout harness
+        uses: actions/checkout@v4
+        with:
+          path: just-bash-harness
+
+      - name: Checkout agent-skills-cli (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: MauricioPerera/agent-skills-cli
+          path: agent-skills-cli
+          ref: main
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            just-bash-harness/package-lock.json
+            agent-skills-cli/package-lock.json
+
+      - name: Build agent-skills-cli sibling
+        working-directory: agent-skills-cli
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install harness
+        working-directory: just-bash-harness
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: just-bash-harness
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: just-bash-harness
+        run: npm test
+
+      - name: Build harness
+        working-directory: just-bash-harness
+        run: npm run build
+
+      - name: Verify built CLI runs
+        working-directory: just-bash-harness
+        run: node dist/cli.js --help
+
+      # Smoke / integration. None of these need credentials or network.
+      # smoke:cf-live is intentionally NOT run in CI — it costs tokens.
+
+      - name: Smoke — FileBank + runExec (slice)
+        working-directory: just-bash-harness
+        run: npm run smoke:slice
+
+      - name: Smoke — full loop (5 scripted scenarios)
+        working-directory: just-bash-harness
+        run: npm run smoke:e2e
+
+      - name: Smoke — full loop with replayed Gemma decisions
+        working-directory: just-bash-harness
+        run: npm run smoke:cf-driven

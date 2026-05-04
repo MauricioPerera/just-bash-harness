@@ -1,0 +1,26 @@
+version: 1
+
+skills:
+  subscribed:
+    # - { pack: github.com/MauricioPerera/some-skill-pack, version: v1.0.0 }
+  overrides:
+    # Skill-id → category override. Use sparingly; prefer fixing the skill upstream.
+    # "some-skill-id": explicit
+
+network:
+  allow: []
+  methods: [GET]
+
+approval:
+  matrix:
+    prohibited: deny
+    explicit: ask
+    regular: allow
+
+limits:
+  maxTurns: 50
+  maxToolCallsPerTurn: 10
+  maxWallclockMs: 600000
+
+telemetry:
+  auditLogPath: .harness/audit.log

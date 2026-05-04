@@ -1,0 +1,137 @@
+# Testing
+
+What's tested, what isn't, and why. As of v0.1.2: **100/100 unit tests pass** in ~5s, plus three integration smokes covering the layers a unit suite can't reach.
+
+## Layout
+
+```
+src/
+  cli-args.test.ts             12 tests   argv parser
+  approval.test.ts             15 tests   deriveCategory + gate
+  policy.test.ts               10 tests   YAML loader + DEFAULT_POLICY
+  provider.test.ts             12 tests   resolveProviderFromEnv factory
+  provider-anthropic.test.ts   30 tests   helpers + construction + fetch failure surface
+  provider-cloudflare.test.ts  21 tests   request + SSE + tool calls + errors
+                              ─────────
+                             100 tests
+scratch/
+  slice.ts                     4-step    FileBank + runQuery + runExec + db export
+  e2e.ts                       5-scenario  full loop with scripted provider
+  e2e-cf-driven.ts             1 PASS    full loop with replayed live Gemma decisions
+  e2e-cloudflare.ts            opt-in    live LLM via real CF creds (not auto-run)
+```
+
+## Running
+
+```bash
+npm run test           # all unit tests, compact reporter (just tally)
+npm run test:list      # all unit tests, spec reporter (per-test names)
+
+# Scratch / integration
+npx tsx scratch/slice.ts                  # always passes; no creds needed
+npx tsx scratch/e2e.ts                    # always passes; no creds needed
+npx tsx scratch/e2e-cf-driven.ts          # always passes; no creds needed (replays
+                                          #   real Gemma decisions captured at design time)
+CF_ACCOUNT_ID=... CF_API_TOKEN=... npx tsx scratch/e2e-cloudflare.ts
+                                          # live API call, costs tokens
+```
+
+The unit suite uses Node's built-in test runner (`node --test`) with `tsx` as a loader. No vitest / jest dependency.
+
+## Coverage map
+
+### What's covered
+
+| Concern | Where | Notes |
+|---|---|---|
+| Argv parsing edge cases | `cli-args.test.ts` | `--key=val`, `--key val`, bare boolean, mixed, duplicates, empty-string, `=` inside value |
+| Approval category derivation | `approval.test.ts` | Signature gate, network/filesystem/idempotent escalation, multi-signal, override by full id, override by shortId, override precedence over derivation, prohibited bypass |
+| Approval gate behavior | `approval.test.ts` | Hard-deny prohibited regardless of matrix, matrix lookup, audit callback persistence |
+| Policy YAML parsing | `policy.test.ts` | Minimal merge with defaults, full override, root non-object rejected, version mismatch rejected, invalid override category rejected, invalid matrix decision rejected, partial matrix override (per-key defaults), wrong-type fallback to default, empty subscribed list, DEFAULT_POLICY shape |
+| Provider factory | `provider.test.ts` | Auto-detect priority (CF > Anthropic when both), `HARNESS_PROVIDER` override, `opts.force`, missing creds throws, model precedence chain (`opts.model` > env > default) |
+| Cloudflare provider — request shape | `provider-cloudflare.test.ts` | URL construction, Authorization Bearer header, Content-Type, Accept, body shape (model, stream, max_completion_tokens, system+messages+tools, optional `temperature`), tools omitted when empty |
+| Cloudflare provider — history reconstruction | `provider-cloudflare.test.ts` | system + prior user + assistant(text+tool_calls) + role:tool result + assistant final + current user — exact 6-message expected |
+| Cloudflare provider — text streaming | `provider-cloudflare.test.ts` | Content deltas → text events, finish_reason=stop → end_turn |
+| Cloudflare provider — SSE robustness | `provider-cloudflare.test.ts` | **Chunk boundaries split mid-line**, **CRLF endings**, malformed lines silently skipped |
+| Cloudflare provider — tool calls | `provider-cloudflare.test.ts` | Args assembled across deltas, name → full SkillId mapping, hallucinated names pass through, **stable order by index across out-of-order chunks**, malformed JSON args → `__parse_error` field |
+| Cloudflare provider — reasoning | `provider-cloudflare.test.ts` | `delta.reasoning` → thinking events |
+| Cloudflare provider — stop reasons | `provider-cloudflare.test.ts` | stop / length / unknown → end_turn / max_tokens / error |
+| Cloudflare provider — error paths | `provider-cloudflare.test.ts` | 4xx response → stop:error + body in text event, fetch throw → stop:error + message |
+| Cloudflare provider — schema mapping | `provider-cloudflare.test.ts` | Required args (no `default`) end up in `required[]`, fully optional schema omits the `required` key |
+| End-to-end loop (no LLM) | `scratch/e2e.ts` | 5 scenarios: regular auto-allow, explicit user-allow, explicit user-deny, prohibited hard-deny, text-only |
+| End-to-end loop (live decisions) | `scratch/e2e-cf-driven.ts` | Real Gemma decisions captured via MCP connector replayed through full pipeline (FileBank → runExec → audit → db turns) |
+| FileBank + runQuery + runExec | `scratch/slice.ts` | Programmatic API, audit auto-write, separate `createBankBash` for sessions, `db export` round-trip |
+
+### What's NOT unit-tested (deliberate)
+
+| Module | Reason |
+|---|---|
+| `provider-anthropic.ts` (full SDK stream parse) | Helpers (`buildMessages`, `buildTools`, `toInputSchema`, `mapStopReason`, `shortIdFromIdentity`, `toolNameOf`, `buildSystemParam`, `toolResultBlocks`) ARE unit-tested. The full `MessageStream` event-translation path (content_block_start / _delta / _stop sequences) is NOT mocked — driving the official SDK with synthetic SSE bodies is brittle to SDK updates. Construction + fetch failure surfacing IS covered. The remaining surface mirrors Cloudflare's; same shape, well-exercised by parallel tests. |
+| `loop.ts` (`runTurn`) | Covered by integration: 5 `e2e.ts` scenarios exercise every branch (regular auto-allow, explicit ask→allow, explicit ask→deny, prohibited hard-deny, text-only termination) plus one Gemma-driven variant. Mocking the orchestrator at the unit level would mostly re-test what those scripted runs already prove. |
+| `toolbox.ts` (`createToolbox`, `summarize`) | Covered by integration: `slice.ts` does the runQuery + runExec round-trip with audit. Mocking `FileBank` adequately is more code than the test would save. |
+| `session.ts` (`createSessionStore`, `restoreSnapshot`) | Covered by integration: `slice.ts` exercises the bash-backed `db sessions/turns/approvals insert/find/export`; `e2e.ts` exercises `appendTurn` + `load`; `e2e-cf-driven.ts` exercises the full round-trip post-loop. |
+| `cli.ts` subcommands (`cmdNew`, `cmdChat`, etc.) | Smoke-tested manually during dev: `harness new`, `harness resume`, `harness skills list` were each invoked. CLI behavior tests would require process-spawning fixtures. |
+
+### Risks the suite explicitly blinds against
+
+| Risk | Test that catches it |
+|---|---|
+| `deriveCategory` regression auto-allows a network-using skill | `network non-empty → explicit` |
+| Override map silently accepts an invalid category | `loadPolicy: rejects invalid override category` |
+| YAML matrix accepts arbitrary verbs (`yolo`) | `loadPolicy: rejects invalid matrix decision` |
+| argv parser eats next flag as value of bare boolean | `parseArgs: bare --flag at end → true` + `--flag followed by --other → true` |
+| SSE stream chunked mid-payload loses an event | `cloudflare provider: chunk boundaries split mid-line are reassembled` |
+| CRLF line endings break parser | `cloudflare provider: handles CRLF line endings` |
+| Tool call args assembled in wrong order when CF returns out-of-order | `cloudflare provider: tool_calls stable order by index across out-of-order chunks` |
+| Provider crashes silently on 4xx, leaving the loop hung | `cloudflare provider: 4xx response → stop:error + error text` |
+| LLM hallucinates a tool name → harness runs unintended code | `cloudflare provider: unknown tool name yields tool_call with raw name (loop denies)` + integration: `e2e.ts` scenario D shows the loop denies unknown skills |
+| Malformed JSON args from LLM → parse error swallowed | `cloudflare provider: malformed tool_call JSON surfaces as __parse_error` |
+| Factory chooses Anthropic over Cloudflare when both creds present | `resolveProviderFromEnv: prefers cloudflare in auto-detect` |
+
+## Adding a test
+
+Follow the patterns in existing files:
+
+- **Unit tests** live next to the module they test as `<module>.test.ts`. They use `node:test` and `node:assert/strict`.
+- **Add the file path** to the `test` and `test:list` scripts in `package.json` (Node's `--test` flag does not glob reliably across platforms; we list files explicitly).
+- **Tests must not depend on each other** or on shared global state. Use `mkdtemp` for any disk fixtures and clean up in `finally`.
+
+Example skeleton:
+
+```ts
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+import { thingUnderTest } from "./thing.js";
+
+test("thing: behavior under normal inputs", () => {
+  assert.equal(thingUnderTest(2), 4);
+});
+
+test("thing: rejects invalid input", () => {
+  assert.throws(() => thingUnderTest(-1), /must be non-negative/);
+});
+```
+
+For tests that need the harness's complex types, see `provider-cloudflare.test.ts`'s `minimalTools()` / `minimalInput()` helpers — copy that pattern.
+
+## Running on CI
+
+The shipped workflow is at [`.github/workflows/ci.yml`](.github/workflows/ci.yml). It:
+
+1. Checks out the harness and `MauricioPerera/agent-skills-cli@main` as a sibling at `../agent-skills-cli`.
+2. Sets up Node 22 with cached `node_modules` keyed by both lockfiles.
+3. `npm ci && npm run build` in the sibling (creates its `dist/`).
+4. `npm ci` in the harness (resolves the `file:../agent-skills-cli` dep against the just-built dist).
+5. Runs `typecheck`, `test`, `build`, then `node dist/cli.js --help` to confirm the bin works.
+6. Runs `smoke:slice`, `smoke:e2e`, and `smoke:cf-driven` (all credential-free, all deterministic).
+
+`smoke:cf-live` is NOT in CI — it spends Cloudflare tokens and depends on live availability. Run it manually before releases:
+
+```bash
+CF_ACCOUNT_ID=... CF_API_TOKEN=... npm run smoke:cf-live
+```
+
+### Notes
+- The sibling-checkout pattern means a breaking change in `agent-skills-cli@main` will fail this CI immediately. That's intentional — we want the early signal. To pin to a specific tag instead, change `ref: main` in the workflow.
+- `concurrency: cancel-in-progress` ensures rapid iteration: a new push cancels older in-flight runs on the same ref.
+- Total CI time is ~3 minutes cold (npm cache miss) and ~90s warm.
