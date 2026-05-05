@@ -2,6 +2,36 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.9] — 2026-05-05
+
+### Bench command — retrieval accuracy regression
+
+`agent-skills-cli` exports `runBench`. We surface it as a `harness` subcommand so retrieval accuracy can be measured against any truth file, with an optional pass/fail threshold for CI gating.
+
+### CLI
+- **`harness bench --truth <path> [--threshold N] [--rerank <mode>] [--k N]`** — runs the bench against the subscribed bank using the configured embedder. `--threshold N` (a top-1 accuracy fraction in [0, 1]) gates exit code: `< N` → exit 1, `>= N` → exit 0. Without `--threshold`, the run is informational and always exits 0.
+- Output: standard bench summary (top-1 / top-3 / top-K counts and percentages, mean top-1 score, mean margin, elapsed) plus the first 10 top-1 failures showing `expected → got` for each.
+
+### Smoke verified
+- Pulled `bench-truth.jsonl` (35 entries) from `agent-skills-pack@v2.2.0`.
+- Ran against the live-test bank (7 skills, stub embedder).
+- Got top-1 = 22.9% (expected for stub — fnv1a-32 has no semantics; intended as a sanity baseline).
+- `--threshold 0.5` → exit 1 with "FAIL — top-1 accuracy 22.9% below threshold 50.0%".
+- `--threshold 0.1` → exit 0.
+
+In production with a real embedder (Ollama, Cloudflare Workers AI, OpenAI, transformers.js), top-1 typically lands in 80-95% — the threshold becomes a real regression guard.
+
+### Recommended CI usage (manual / workflow_dispatch)
+A reasonable check for a release branch:
+```bash
+export OLLAMA_BASE_URL=...   # or CF_*, OPENAI_*
+harness skills add github.com/MauricioPerera/agent-skills-pack@vX.Y.Z
+curl -fsSL https://raw.githubusercontent.com/MauricioPerera/agent-skills-pack/vX.Y.Z/bench-truth.jsonl > truth.jsonl
+harness bench --truth truth.jsonl --threshold 0.85
+```
+
+Exit 1 if accuracy regresses below 85%. Not added to the default CI workflow because it requires either an embedder service (network/credentials) or a downloaded transformers.js model (~100MB, slow first run). Use `workflow_dispatch` or a release-only job.
+
 ## [0.1.8] — 2026-05-05
 
 ### AES-256-GCM at rest for sessions + memory

@@ -20,6 +20,7 @@ import {
   resolveEmbedderFromEnv,
   createStubEmbedder,
   runSync,
+  runBench,
   type EmbeddingProvider,
 } from "@rckflr/agent-skills-cli";
 
@@ -34,7 +35,7 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.8";
+const HARNESS_VERSION = "0.1.9";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
@@ -53,6 +54,7 @@ Usage:
   harness memory remember <content> [--kind <k>] [--session <id>]
   harness memory stats
   harness memory export <path>
+  harness bench --truth <path> [--threshold N] [--rerank <mode>] [--k N]
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -539,6 +541,93 @@ const cmdAudit = async (args: Args): Promise<number> => {
   return 0;
 };
 
+// ─── bench ─────────────────────────────────────────────────────────────────
+
+const cmdBench = async (args: Args): Promise<number> => {
+  const truthFile = args.flags.get("truth");
+  if (typeof truthFile !== "string") {
+    process.stderr.write(
+      "harness bench: --truth <path> required (JSON or JSONL with {intent, expected} entries)\n",
+    );
+    return 64;
+  }
+  const k = Number(args.flags.get("k") ?? "5") || 5;
+  const rerankMode = (args.flags.get("rerank") as
+    | "global"
+    | "intent-conditional"
+    | "none"
+    | undefined) ?? undefined;
+  const thresholdFlag = args.flags.get("threshold");
+  // Threshold is interpreted as top-1 accuracy in [0, 1]. Defaults to 0
+  // (informational run, exit 0 regardless). Useful values: 0.7, 0.9.
+  const threshold = typeof thresholdFlag === "string"
+    ? Number(thresholdFlag)
+    : 0;
+
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+  const embedder = resolveEmbedderOrStub();
+  const bank = await ensureBank(policy, embedder);
+
+  const skills = await bank.listSkills();
+  if (skills.length === 0) {
+    process.stderr.write(
+      "harness bench: no skills in bank — subscribe a pack first with 'harness skills add <pack@version>'\n",
+    );
+    return 64;
+  }
+
+  process.stderr.write(
+    `[bench: ${skills.length} skills, embedder=${embedder.name}, k=${k}, rerank=${rerankMode ?? "intent-conditional (default)"}]\n`,
+  );
+
+  const result = await runBench({
+    truthFile,
+    bank,
+    embedder,
+    k,
+    ...(rerankMode !== undefined ? { rerankMode } : {}),
+  });
+
+  process.stdout.write(`# bench result\n`);
+  process.stdout.write(`  truth_file:        ${result.truth_file}\n`);
+  process.stdout.write(`  embedding_model:   ${result.embedding_model}\n`);
+  process.stdout.write(`  rerank_mode:       ${result.rerank_mode}\n`);
+  process.stdout.write(`  k:                 ${result.k}\n`);
+  process.stdout.write(`  total queries:     ${result.total}\n`);
+  const top1Pct = result.total > 0 ? result.top1 / result.total : 0;
+  const top3Pct = result.total > 0 ? result.top3 / result.total : 0;
+  const topKPct = result.total > 0 ? result.topK / result.total : 0;
+  process.stdout.write(`  top-1 accuracy:    ${result.top1}/${result.total}  (${(top1Pct * 100).toFixed(1)}%)\n`);
+  process.stdout.write(`  top-3 accuracy:    ${result.top3}/${result.total}  (${(top3Pct * 100).toFixed(1)}%)\n`);
+  process.stdout.write(`  top-${k} accuracy:    ${result.topK}/${result.total}  (${(topKPct * 100).toFixed(1)}%)\n`);
+  process.stdout.write(`  mean top-1 score:  ${result.mean_top1_score.toFixed(4)}\n`);
+  process.stdout.write(`  mean margin:       ${result.mean_margin.toFixed(4)}\n`);
+  process.stdout.write(`  elapsed:           ${result.elapsed_ms}ms\n`);
+
+  if (result.failures.length > 0) {
+    process.stdout.write(`\n# top-1 failures (${result.failures.length}):\n`);
+    for (const f of result.failures.slice(0, 10)) {
+      const got = f.got_top1.split("/").at(-1) ?? f.got_top1;
+      process.stdout.write(
+        `  rank=${f.rank ?? "miss"}  expected=${f.expected.padEnd(20)} got=${got}\n`,
+      );
+      process.stdout.write(`    intent: ${f.intent}\n`);
+    }
+    if (result.failures.length > 10) {
+      process.stdout.write(`  ... and ${result.failures.length - 10} more\n`);
+    }
+  }
+
+  if (threshold > 0 && top1Pct < threshold) {
+    process.stderr.write(
+      `\nFAIL — top-1 accuracy ${(top1Pct * 100).toFixed(1)}% below threshold ${(threshold * 100).toFixed(1)}%\n`,
+    );
+    return 1;
+  }
+  return 0;
+};
+
 // ─── memory subcommands ────────────────────────────────────────────────────
 
 const requireMemory = async (
@@ -789,6 +878,8 @@ const main = async (argv: readonly string[]): Promise<number> => {
       return withCommandError("sessions", () => cmdSessions(args));
     case "audit":
       return withCommandError("audit", () => cmdAudit(args));
+    case "bench":
+      return withCommandError("bench", () => cmdBench(args));
     case "recall":
       return withCommandError("recall", () => cmdRecall(args, "recall"));
     case "search":
