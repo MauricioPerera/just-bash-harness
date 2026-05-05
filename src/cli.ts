@@ -35,7 +35,7 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.2.4";
+const HARNESS_VERSION = "0.2.5";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 

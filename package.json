@@ -1,8 +1,7 @@
 {
   "name": "just-bash-harness",
   "version": "0.2.5",
-  "private": true,
-  "description": "Agentic harness on top of just-bash + agent-skills.",
+  "description": "Single-agent harness on top of just-bash and the agent-skills ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers (Anthropic + Cloudflare Workers AI), cross-session memory, optional AES-256-GCM at rest.",
   "license": "MIT",
   "author": "Mauricio Perera",
   "type": "module",
@@ -20,6 +19,26 @@
       "import": "./dist/index.js"
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MauricioPerera/just-bash-harness.git"
+  },
+  "homepage": "https://github.com/MauricioPerera/just-bash-harness#readme",
+  "bugs": {
+    "url": "https://github.com/MauricioPerera/just-bash-harness/issues"
+  },
+  "keywords": [
+    "agent",
+    "agentic",
+    "agent-skills",
+    "just-bash",
+    "llm-tools",
+    "sandboxed-execution",
+    "anthropic",
+    "cloudflare-workers-ai",
+    "approval-gate",
+    "memory"
+  ],
   "files": [
     "dist",
     "examples",
@@ -45,9 +64,9 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
-    "@rckflr/agent-skills-cli": "file:../agent-skills-cli",
+    "@rckflr/agent-skills-cli": "^2.2.0",
     "just-bash": "^2.14.3",
-    "just-bash-wiki": "file:../just-bash-wiki",
+    "just-bash-wiki": "^1.2.1",
     "yaml": "^2.5.0"
   },
   "devDependencies": {

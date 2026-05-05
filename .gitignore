@@ -8,3 +8,5 @@ dist
 .harness/
 sessions/
 .claude/settings.local.json
+# npm publish credentials — local only, never committed
+.npmrc
