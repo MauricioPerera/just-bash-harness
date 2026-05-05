@@ -1,24 +1,35 @@
 # Testing
 
-What's tested, what isn't, and why. As of v0.1.2: **100/100 unit tests pass** in ~5s, plus three integration smokes covering the layers a unit suite can't reach.
+What's tested, what isn't, and why. As of v0.3.0: **195/195 unit tests pass** in ~30-60s, plus a growing set of integration smokes covering the layers a unit suite can't reach.
 
 ## Layout
 
 ```
 src/
   cli-args.test.ts             12 tests   argv parser
-  approval.test.ts             15 tests   deriveCategory + gate
+  approval.test.ts             26 tests   deriveCategory + gate + chain union + unknown-step worst-case
+  approval-stats.test.ts        8 tests   per-skill counters + suggestion threshold logic + YAML render
+  loop.test.ts                  7 tests   runCompactionSummary input shape + truncation + stop semantics
   policy.test.ts               10 tests   YAML loader + DEFAULT_POLICY
+  policy-overrides.test.ts      5 tests   --allow-unsigned policy mutation
   provider.test.ts             12 tests   resolveProviderFromEnv factory
   provider-anthropic.test.ts   30 tests   helpers + construction + fetch failure surface
-  provider-cloudflare.test.ts  21 tests   request + SSE + tool calls + errors
+  provider-cloudflare.test.ts  49 tests   request + SSE + tool calls + Hermes parser + retry policy
+  redact.test.ts               15 tests   pattern coverage + false-positive resistance
+  toolbox.test.ts               9 tests   applicable_when filter
+  memory.test.ts               12 tests   wiki-backed Memory: recall, persist, filters, charBudget
                               ─────────
-                             100 tests
+                             195 tests
 scratch/
   slice.ts                     4-step    FileBank + runQuery + runExec + db export
   e2e.ts                       5-scenario  full loop with scripted provider
   e2e-cf-driven.ts             1 PASS    full loop with replayed live Gemma decisions
   e2e-cloudflare.ts            opt-in    live LLM via real CF creds (not auto-run)
+  live-test-memory.ts          5 PASS    cross-session memory recall via SpyProvider
+  live-test-compaction.ts      5 PASS    history slicing with compaction enabled
+  live-test-encryption.ts      4 PASS    AES-256-GCM at rest verified at the bytes level
+  live-test-chains.ts          8 PASS    spec §2.8 chains with output_var substitution
+  live-test-hermes.ts          5 PASS    captured Hermes 2 Pro SSE stream replayed
 ```
 
 ## Running
@@ -58,6 +69,13 @@ The unit suite uses Node's built-in test runner (`node --test`) with `tsx` as a 
 | Cloudflare provider — stop reasons | `provider-cloudflare.test.ts` | stop / length / unknown → end_turn / max_tokens / error |
 | Cloudflare provider — error paths | `provider-cloudflare.test.ts` | 4xx response → stop:error + body in text event, fetch throw → stop:error + message |
 | Cloudflare provider — schema mapping | `provider-cloudflare.test.ts` | Required args (no `default`) end up in `required[]`, fully optional schema omits the `required` key |
+| Cloudflare provider — Hermes inline parser | `provider-cloudflare.test.ts` | `<tool_call>...</tool_call>` blocks split across SSE chunks reassembled, Python-repr → JSON parse, malformed inner content surfaces as `parseFailures` (diagnostic), partial tags held back |
+| Cloudflare provider — retry policy | `provider-cloudflare.test.ts` | `parseRetryAfter` (seconds + HTTP date + garbage), `computeBackoffMs` (exponential progression + cap + zero-jitter), 429 once → success on 2nd attempt (Retry-After honored), 503 chain → exhausts maxRetries cleanly, 400 fails fast (non-retryable), AbortSignal during backoff exits, network error retried like 5xx |
+| Approval-fatigue suggester | `approval-stats.test.ts` | Threshold logic (minAsks, minAllowRatio), single-deny disqualifies, last_decision=deny disqualifies, sort by ask_count desc, paste-ready YAML rendering |
+| Secret redaction patterns | `redact.test.ts` | All 6 default patterns happy paths, multi-secret input, false-positive resistance (UUIDs and env-style PASSWORD assignments NOT clipped), custom pattern list overrides defaults, `scrubToolResult` preserves non-stdout/stderr fields, all DEFAULT_PATTERNS verified `/g` |
+| Compaction summary helper | `loop.test.ts` | `runCompactionSummary` formats dropped turns into structured user message (USER/ASSISTANT/TOOLS_CALLED/TOOL_RESULTS), 50K-char input cap with truncation marker, stops on first `stop` event, system prompt includes budget hint, no tools available to summary call |
+| Unknown chain step worst-case | `approval.test.ts` | `synthesizeUnknownChainStep` produces fail-closed capability fields (signatureStatus: unsigned, network/filesystem: ["*"], idempotent: false), `deriveCategory` rejects via signature gate, defense in depth: still escalates with require_signed=false, mixed chain (clean known + unknown) → prohibited |
+| `--allow-unsigned` flag | `policy-overrides.test.ts` | Flips `signature.require_signed` to false; warns; returns NEW policy (no mutation); ignored when flag has a string value (only literal `true`); no-op when require_signed already false |
 | End-to-end loop (no LLM) | `scratch/e2e.ts` | 5 scenarios: regular auto-allow, explicit user-allow, explicit user-deny, prohibited hard-deny, text-only |
 | End-to-end loop (live decisions) | `scratch/e2e-cf-driven.ts` | Real Gemma decisions captured via MCP connector replayed through full pipeline (FileBank → runExec → audit → db turns) |
 | FileBank + runQuery + runExec | `scratch/slice.ts` | Programmatic API, audit auto-write, separate `createBankBash` for sessions, `db export` round-trip |
@@ -67,9 +85,11 @@ The unit suite uses Node's built-in test runner (`node --test`) with `tsx` as a 
 | Module | Reason |
 |---|---|
 | `provider-anthropic.ts` (full SDK stream parse) | Helpers (`buildMessages`, `buildTools`, `toInputSchema`, `mapStopReason`, `shortIdFromIdentity`, `toolNameOf`, `buildSystemParam`, `toolResultBlocks`) ARE unit-tested. The full `MessageStream` event-translation path (content_block_start / _delta / _stop sequences) is NOT mocked — driving the official SDK with synthetic SSE bodies is brittle to SDK updates. Construction + fetch failure surfacing IS covered. The remaining surface mirrors Cloudflare's; same shape, well-exercised by parallel tests. |
-| `loop.ts` (`runTurn`) | Covered by integration: 5 `e2e.ts` scenarios exercise every branch (regular auto-allow, explicit ask→allow, explicit ask→deny, prohibited hard-deny, text-only termination) plus one Gemma-driven variant. Mocking the orchestrator at the unit level would mostly re-test what those scripted runs already prove. |
-| `toolbox.ts` (`createToolbox`, `summarize`) | Covered by integration: `slice.ts` does the runQuery + runExec round-trip with audit. Mocking `FileBank` adequately is more code than the test would save. |
+| `loop.ts` (`runTurn` orchestration) | Covered by integration: 5 `e2e.ts` scenarios exercise every branch (regular auto-allow, explicit ask→allow, explicit ask→deny, prohibited hard-deny, text-only termination) plus one Gemma-driven variant + the dedicated memory / compaction smokes. The pure helpers extracted from `runTurn` (`runCompactionSummary`, `synthesizeUnknownChainStep`) ARE unit-tested. |
+| `toolbox.ts` (`createToolbox`, `summarize`) | `applicable_when` filtering IS unit-tested in `toolbox.test.ts`. The remaining surface (runQuery + runExec round-trip with audit) is covered by integration via `slice.ts`. Mocking `FileBank` adequately is more code than the test would save. |
 | `session.ts` (`createSessionStore`, `restoreSnapshot`) | Covered by integration: `slice.ts` exercises the bash-backed `db sessions/turns/approvals insert/find/export`; `e2e.ts` exercises `appendTurn` + `load`; `e2e-cf-driven.ts` exercises the full round-trip post-loop. |
+| `rekey.ts` (`runRekey` end-to-end) | The orchestration is fs + bash-driven and depends on `just-bash-data`'s actual encryption behavior. Unit testing would require mocking `bash.exec` at a level that re-implements db semantics. Smoke-tested manually for v0.3.0; a future stubbed-bash integration test is on the list. |
+| `approval-stats.ts` (`createApprovalStatsStore` runtime) | Pure functions (`suggestOverrides`, `renderSuggestionsYaml`) ARE unit-tested. The bash-backed `record` / `list` methods round-trip through `db approval_stats` — covered indirectly by anyone using `harness chat` with the stats store wired. |
 | `cli.ts` subcommands (`cmdNew`, `cmdChat`, etc.) | Smoke-tested manually during dev: `harness new`, `harness resume`, `harness skills list` were each invoked. CLI behavior tests would require process-spawning fixtures. |
 
 ### Risks the suite explicitly blinds against

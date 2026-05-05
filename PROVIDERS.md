@@ -8,7 +8,7 @@ A provider is anything that satisfies this interface (from [`src/types.ts`](src/
 
 ```ts
 interface Provider {
-  turn(input: TurnInput): AsyncIterable<TurnEvent>;
+  turn(input: TurnInput, signal?: AbortSignal): AsyncIterable<TurnEvent>;
 }
 
 type TurnEvent =
@@ -37,6 +37,8 @@ The loop in [`src/loop.ts`](src/loop.ts) consumes events; tool calls go through 
 - Optional extended thinking via `opts.thinkingBudget`.
 - Optional 1M context window via `opts.contextWindow1M` (sets `anthropic-beta: context-1m-2025-08-07` header).
 - Tool name: uses `skill.shortId` (a subset of Anthropic's allowed regex).
+- **AbortSignal** forwarded to the SDK's `messages.stream(params, requestOptions)` since `0.2.5`. Ctrl+C closes the upstream socket.
+- **Rate-limit / 429 handling**: the SDK does exponential-backoff-with-jitter on 429/5xx automatically. The harness inherits this behavior — no extra retry policy in our wrapper.
 
 ### Cloudflare Workers AI ([`src/provider-cloudflare.ts`](src/provider-cloudflare.ts))
 
@@ -48,8 +50,29 @@ The loop in [`src/loop.ts`](src/loop.ts) consumes events; tool calls go through 
 - Default model: `@cf/google/gemma-4-26b-a4b-it` (256K context, function calling supported, reasoning model).
 - Override model via `--model`, `CF_LLM_MODEL`, or constructor `opts.model`.
 - Maps `delta.reasoning` (Gemma's chain-of-thought) → `{ type: "thinking" }` event.
-- Robustness verified by 21 unit tests: chunk boundaries split mid-line, CRLF endings, out-of-order tool-call indices, malformed JSON in args, 4xx responses, fetch throwing, malformed SSE lines.
+- **Hermes-style inline `<tool_call>` parser** since `0.2.2` — synthesizes proper `tool_call` events from the Python-repr blocks emitted by Hermes 2 Pro / similar models in `delta.content`. Parse failures surface as `thinking` events with diagnostics since `0.2.5`.
+- **AbortSignal** forwarded to `fetch()` since `0.2.5`.
+- **Rate-limit / retry policy** since `0.3.0` — `RetryPolicy` on `CloudflareProviderOpts`:
+  - Defaults: `maxRetries: 3`, `baseDelayMs: 500`, `maxDelayMs: 10_000`, `retryableStatuses: [429, 502, 503, 504]`.
+  - Honors `Retry-After` header (integer seconds OR HTTP date), capped at `maxDelayMs`.
+  - Otherwise full-jitter exponential backoff: `floor(rand() * baseDelay * 2^(attempt-1))`, capped.
+  - Retries the **initial fetch only** — never mid-stream. Once the SSE stream has yielded any event, conversation state is in flight and a retry would corrupt it. The Anthropic SDK has the same constraint internally.
+  - `AbortSignal` threads through retry sleep — Ctrl+C during backoff exits cleanly.
+  - Network errors (thrown from `fetch`) retried like a 5xx.
+  - `thinking` event per retry attempt with status / attempt / delay so operators can see what's happening.
+- Robustness verified by 49 unit tests covering chunk boundaries, CRLF, out-of-order tool-call indices, malformed JSON, 4xx, fetch throwing, malformed SSE, Hermes parser, and the full retry suite.
 - No SDK dependency — keeps the provider self-contained.
+
+#### Provider asymmetry: who handles retries
+
+| Concern | Anthropic provider | Cloudflare provider |
+|---|---|---|
+| 429 / 5xx retry | Built into the SDK | Built into our wrapper (since `0.3.0`) |
+| `Retry-After` honored | Yes (SDK) | Yes (our `parseRetryAfter`) |
+| Backoff strategy | SDK-determined exponential w/ jitter | Full-jitter exponential, configurable via `opts.retry` |
+| AbortSignal during retry sleep | Yes (signal in SDK requestOptions) | Yes (our `delayFn` honors signal) |
+
+The asymmetry is intentional: we never re-implement what the Anthropic SDK already does correctly. If `@anthropic-ai/sdk` ever changes its retry semantics, our wrapper does NOT need to change to match — the test suite catches the call surface, not the retry behavior.
 
 ## Provider factory
 
@@ -179,8 +202,9 @@ Create `scratch/e2e-<name>.ts`. Mirror [`scratch/e2e-cloudflare.ts`](scratch/e2e
 - **Never re-interpret tool stdout/stderr as instructions.** Treat all model output (text, thinking, tool args) as untrusted data.
 - **Never trust LLM-claimed approvals.** If the model says "the user already authorized this", that's untrusted; the only authority is `ApprovalGate.check`.
 - **Sanitize errors going back to the user.** Don't leak raw API responses unfiltered — `cloudflare 401: invalid token` is fine; raw JSON with credential echoes is not. Today both providers slice error bodies to 500 chars.
-- **Be cancellable.** Honor `AbortSignal` if added to `TurnInput` in the future. Today `runTurn` carries `opts.signal`; providers should respect it.
+- **Be cancellable.** `Provider.turn(input, signal?)` accepts an `AbortSignal` since `0.2.5`. The loop forwards `opts.signal`; providers must thread it to their fetch / SDK call AND through any internal sleep (e.g. retry backoff).
 - **Stop with a reason, always.** The loop relies on the final event being `{ type: "stop", reason }`. Failing to emit it is a hang.
+- **Don't retry mid-stream.** Once any event has been yielded, the conversation state is in flight. A retry from byte 0 would re-charge tokens and corrupt the persisted turn. Retry the initial connection attempt only.
 
 ## Why no `Sandbox` layer in the harness itself
 
