@@ -86,15 +86,15 @@ export const scrubSecrets = (
  * Returns a NEW object — never mutates the input. Callers persist or
  * forward the returned object instead of the original.
  *
- * The returned object has a `redacted: number` field added so the count
- * of matches is preserved through the audit chain. We don't add it to
- * `ToolResult` proper to keep the existing public type contract stable;
- * the field is opt-in for callers that care about the count.
+ * The returned object has its `redacted` field set to the total match
+ * count (or 0 when nothing was scrubbed). `ToolResult.redacted?: number`
+ * was made part of the public type in 0.3.0 (post-publish doctrine fix)
+ * so consumers no longer need to cast through `T & { redacted: number }`.
  */
-export const scrubToolResult = <T extends { stdout: string; stderr: string }>(
+export const scrubToolResult = <T extends { stdout: string; stderr: string; redacted?: number }>(
   result: T,
   patterns: readonly RedactionPattern[] = DEFAULT_PATTERNS,
-): T & { redacted: number } => {
+): T => {
   const stdoutScrub = scrubSecrets(result.stdout, patterns);
   const stderrScrub = scrubSecrets(result.stderr, patterns);
   return {

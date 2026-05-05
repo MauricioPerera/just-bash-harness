@@ -38,14 +38,23 @@ import { createBankBash } from "@rckflr/agent-skills-cli";
 
 type BashInstance = ReturnType<typeof createBankBash>;
 
-export type RekeyTarget = "sessions" | "memory" | "all";
+export type RekeyTarget = "sessions" | "memory" | "skills" | "all";
 
 export interface RekeyOpts {
   /** Sessions root (from policy.paths.sessionsRoot). */
   sessionsRoot: string;
   /** Memory root (from policy.memory.rootDir). */
   memoryRoot?: string;
-  /** Target subset. "all" runs sessions then memory in that order. */
+  /**
+   * Skills bank root (from policy.paths.skillsBankDir or defaultBankRoot()).
+   * Currently only houses `db approval_stats` (added in 0.3.0). The skills
+   * FileBank itself does NOT use createBankBash encryption today, so this
+   * target is a no-op for users who never enabled encryption on it.
+   * Included so a future move to encrypt the skills bank doesn't leave
+   * approval_stats orphaned.
+   */
+  skillsRoot?: string;
+  /** Target subset. "all" runs sessions, then skills, then memory in that order. */
   target: RekeyTarget;
   /** Old key the bank was encrypted with. */
   oldKey: string;
@@ -67,9 +76,14 @@ export interface RekeyResult {
   errors: { dir: string; message: string }[];
 }
 
-// Hardcoded collection lists. See module header for the rationale.
+// Hardcoded collection lists per bank kind. See module header for the
+// rationale. When new collections are added (e.g. approval_stats in 0.3.0),
+// the relevant list here must be extended OR the consumer must add
+// dynamic discovery — db doesn't expose --list-collections today, so a
+// future improvement is to readdir the bank dir and match a known suffix.
 const SESSION_COLLECTIONS = ["sessions", "turns", "approvals"] as const;
 const MEMORY_COLLECTIONS = ["sources"] as const;
+const SKILLS_COLLECTIONS = ["approval_stats"] as const;
 
 const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
 
@@ -248,6 +262,19 @@ export const runRekey = async (opts: RekeyOpts): Promise<RekeyResult> => {
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     }
+  }
+
+  if ((opts.target === "skills" || opts.target === "all") && opts.skillsRoot) {
+    // Skills bank root holds approval_stats (and any future bank-level
+    // collections). Today the skills FileBank doesn't take an encryption
+    // key, so this is a no-op unless that changes — included for
+    // correctness if/when the skills bank goes encrypted.
+    dirs.push({
+      dir: opts.skillsRoot,
+      collections: SKILLS_COLLECTIONS,
+      // Reuse session salt (no separate salt for skills bank in policy schema).
+      ...(opts.saltSession !== undefined ? { salt: opts.saltSession } : {}),
+    });
   }
 
   if ((opts.target === "memory" || opts.target === "all") && opts.memoryRoot) {

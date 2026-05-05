@@ -9,9 +9,19 @@ Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-ba
 This is **maintainer-grade software for a specific ecosystem**, not a generic agent harness aiming for mass adoption. It's designed for:
 
 - The maintainer of the `agent-skills` / `just-bash` stack (`@rckflr/agent-skills-cli`, `just-bash-data`, `just-bash-wiki`) and tightly-integrated downstreams.
-- Early-adopter engineers comfortable reading the source, willing to track a small stack of related packages, and able to make their own calls on the open trade-offs (no built-in secret redaction in tool stdout, optional-but-not-rotatable encryption key, single-tenant by design).
+- Early-adopter engineers comfortable reading the source, willing to track a small stack of related packages, and able to make their own calls on the open trade-offs.
 
 If you want a broader-purpose agent runtime with multi-tenancy, GUI, and strong integration with arbitrary tool ecosystems, this isn't it. If you want a small, auditable loop that composes the `agent-skills` spec primitives end-to-end, it is.
+
+### Trade-offs that landed but still have caveats
+
+These were originally listed as outright gaps in v0.2.7. v0.3.0 closed each of them, but with caveats worth knowing before adopting:
+
+- **Secret redaction in tool stdout**: implemented as a Phase 1 conservative regex pass (AWS keys, GitHub tokens, Slack tokens, JWT shape, PEM private-key blocks). Phase 2 is *not* implemented: there is no `policy.redaction` config for adding custom patterns, no per-skill opt-out (so a skill that legitimately handles JWTs will see its output redacted), and no generic high-entropy or env-style assignment patterns (would clip too many false positives without policy config).
+- **Encryption key rotation**: implemented as `harness rekey` with `--dry-run` validation and atomic rename. Caveats: the mv → mv window between backup and promote is sub-second but NOT strictly atomic; the command refuses to run if the target dir was modified <60s ago (best-effort, not a real lock); and the collection list is hardcoded per bank kind, so adding new collections in a future release requires updating `rekey.ts` to migrate them.
+- **Single-tenant**: still the explicit design assumption. `harness rekey` and approval-stats both implicitly rely on it (race-condition-prone in concurrent multi-process scenarios). Multi-tenancy is not on the roadmap; if you need it, the harness is the wrong starting point.
+
+These are not bugs — they are design points where the cheap thing landed and the comprehensive thing didn't. Each is tracked in `CHANGELOG.md` for v0.3.0 with rationale, and each has a clear path to a follow-up if/when needed.
 
 ## What it is
 

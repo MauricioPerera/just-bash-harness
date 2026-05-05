@@ -61,6 +61,7 @@
     "smoke:e2e": "tsx scratch/e2e.ts",
     "smoke:cf-driven": "tsx scratch/e2e-cf-driven.ts",
     "smoke:cf-live": "tsx scratch/e2e-cloudflare.ts",
+    "smoke:summarize-disabled": "tsx scratch/live-test-summarize-disabled.ts",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

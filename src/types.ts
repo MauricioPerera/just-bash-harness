@@ -57,11 +57,19 @@ export interface ToolResult {
   exitCode: number;
   elapsedMs: number;
   timedOut: boolean;
-  // NOTE: a `redacted: boolean` field used to live here describing whether
-  // sensitive args were stripped from the audit record. It was always
-  // false in practice — never implemented end-to-end — so it was removed
-  // in v0.2.4. If real redaction lands later (regex of secrets, scrubbing
-  // stdout, etc.), restore the field as a definitive `true` indicator.
+  /**
+   * Number of secret patterns scrubbed from stdout/stderr by `scrubToolResult`
+   * before this result was persisted / fed back to the provider. Optional
+   * because legacy callers and pre-redact code paths don't set it; a missing
+   * value should be treated as "not scrubbed" (NOT "zero matches"). When
+   * present, the breakdown by pattern kind lives only in the in-process
+   * ScrubResult — the audit trail keeps the count, not the kinds.
+   *
+   * History: removed as `redacted: boolean` in v0.2.4 (always false because
+   * scrubbing wasn't implemented). Restored as `redacted?: number` in v0.3.0
+   * when actual scrubbing landed via src/redact.ts.
+   */
+  redacted?: number;
 }
 
 export interface Toolbox {

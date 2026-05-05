@@ -485,7 +485,9 @@ export const runTurn = async (
       // record AND the LLM context see [REDACTED:<kind>:<len>] instead.
       // Phase 1: conservative pattern set (see src/redact.ts).
       const scrubbed = scrubToolResult(result);
-      if (scrubbed.redacted > 0) {
+      // `redacted` is now optional on ToolResult (since 0.3.0). scrubToolResult
+      // always sets it, but TS only knows the public-type contract.
+      if ((scrubbed.redacted ?? 0) > 0) {
         opts.handlers?.onThinking?.(
           `[redact: ${scrubbed.redacted} secret(s) scrubbed from ${resolved.shortId} output]\n`,
         );

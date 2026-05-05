@@ -67,7 +67,7 @@ Usage:
   harness memory stats
   harness memory export <path>
   harness bench --truth <path> [--threshold N] [--rerank <mode>] [--k N]
-  harness rekey --from-env <var> --to-env <var> [--target sessions|memory|all] [--dry-run]
+  harness rekey --from-env <var> --to-env <var> [--target sessions|memory|skills|all] [--dry-run]
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -1143,7 +1143,10 @@ const cmdMemoryRemember = async (args: Args): Promise<number> => {
 const cmdRekey = async (args: Args): Promise<number> => {
   const targetFlag = (args.flags.get("target") as string | true | undefined);
   const target: RekeyTarget =
-    targetFlag === "sessions" || targetFlag === "memory" || targetFlag === "all"
+    targetFlag === "sessions" ||
+    targetFlag === "memory" ||
+    targetFlag === "skills" ||
+    targetFlag === "all"
       ? targetFlag
       : "all";
 
@@ -1176,6 +1179,9 @@ const cmdRekey = async (args: Args): Promise<number> => {
   const result = await runRekey({
     sessionsRoot: policy.paths.sessionsRoot,
     ...(policy.memory.enabled ? { memoryRoot: policy.memory.rootDir } : {}),
+    // Skills bank is no-op for rekey today (no encryption), but pass it
+    // through so a future encrypted skills bank covers approval_stats.
+    skillsRoot: policy.paths.skillsBankDir ?? defaultBankRoot(),
     target,
     oldKey,
     newKey,
