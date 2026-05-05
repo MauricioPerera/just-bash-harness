@@ -66,6 +66,33 @@ const DEFAULT_SYSTEM_PROMPT =
 
 const newTurnId = () => `t_${randomUUID().slice(0, 12)}` as Turn["id"];
 
+/**
+ * Build a synthetic worst-case ResolvedSkill for a chain step whose target
+ * identity is not in the bank (e.g. the parent declared `chains: [{ skill:
+ * "github.com/foo/bar/skills/typo@v1" }]` but no such skill resolved).
+ *
+ * Treated as the worst case so `deriveCategory` rejects the union — fail
+ * closed. The parent's metadata is used as scaffolding only for the fields
+ * that don't matter for derivation; the four capability fields below are
+ * forced to maximum-restriction values.
+ *
+ * Exported so this fail-closed contract can be unit-tested in isolation —
+ * regression catch for the v0.2.3 lesson that orchestration features must
+ * not bypass approval invariants.
+ */
+export const synthesizeUnknownChainStep = (
+  parent: ResolvedSkill,
+  stepSkillId: string,
+): ResolvedSkill => ({
+  ...parent, // scaffolding for non-capability fields (title, description, etc.)
+  id: stepSkillId,
+  shortId: stepSkillId.split("/").at(-1) ?? stepSkillId,
+  signatureStatus: "unsigned",
+  network: ["*"],
+  filesystem: ["*"],
+  idempotent: false,
+});
+
 export const runTurn = async (
   deps: LoopDeps,
   opts: RunOpts,
@@ -259,16 +286,7 @@ export const runTurn = async (
       for (const step of resolved.chains ?? []) {
         const stepSummary = summaryById.get(step.skill);
         if (stepSummary === undefined) {
-          // Synthetic worst-case capabilities so the chain gets rejected.
-          chainSkills.push({
-            ...resolved, // copy parent's metadata as scaffolding
-            id: step.skill,
-            shortId: step.skill.split("/").at(-1) ?? step.skill,
-            signatureStatus: "unsigned",
-            network: ["*"],
-            filesystem: ["*"],
-            idempotent: false,
-          });
+          chainSkills.push(synthesizeUnknownChainStep(resolved, step.skill));
         } else {
           chainSkills.push({ ...stepSummary });
         }

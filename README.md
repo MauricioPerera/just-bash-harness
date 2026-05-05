@@ -178,6 +178,10 @@ npm run smoke:cf-driven    # full loop, replayed Gemma decisions
 
 CI runs the typecheck + tests + build + the three credential-free smokes on every push to `main` and every PR. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml) and [TESTING.md](TESTING.md) for what's covered and what's intentionally not unit-tested.
 
+## Lessons
+
+[LESSONS.md](LESSONS.md) captures operational doctrines distilled from real bugs: each entry is anchored to the release where the bug surfaced (e.g. v0.2.3 chains-bypass-approval) and stated as a one-sentence rule that should fire in code review for related future features. Read at design time, not incident time.
+
 ## Layout
 
 ```

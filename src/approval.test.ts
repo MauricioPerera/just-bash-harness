@@ -5,6 +5,7 @@ import {
   createApprovalGate,
   type DerivedCategory,
 } from "./approval.js";
+import { synthesizeUnknownChainStep } from "./loop.js";
 import type { ApprovalRecord, Policy, ResolvedSkill } from "./types.js";
 
 // ─── fixtures ──────────────────────────────────────────────────────────────
@@ -315,4 +316,93 @@ test("deriveCategory: chains[] union — override on parent still wins (escape h
   // the user has explicitly opted into trusting this whole chain.
   assert.equal(r.category, "regular");
   assert.deepEqual(r.derivedFrom, ["override:regular"]);
+});
+
+// ─── unknown chain step worst-case synthesis (fail-closed contract) ───────
+//
+// When a parent declares chains[] with a step pointing at a skill identity
+// that is not in the bank, loop.ts synthesizes a worst-case ResolvedSkill
+// for that step before passing it to deriveCategory. These tests guard the
+// fail-closed invariant: an unknown chain step MUST resolve to prohibited,
+// regardless of policy permissiveness, so a malicious parent cannot smuggle
+// a privileged step through by referencing an identity that won't be found.
+
+test("synthesizeUnknownChainStep: applies worst-case capability fields", () => {
+  const parent = baseSkill();
+  const synthetic = synthesizeUnknownChainStep(parent, "github.com/foo/bar/skills/typo@v1");
+  assert.equal(synthetic.id, "github.com/foo/bar/skills/typo@v1");
+  assert.equal(synthetic.shortId, "typo@v1");
+  assert.equal(synthetic.signatureStatus, "unsigned");
+  assert.deepEqual(synthetic.network, ["*"]);
+  assert.deepEqual(synthetic.filesystem, ["*"]);
+  assert.equal(synthetic.idempotent, false);
+});
+
+test("synthesizeUnknownChainStep: shortId falls back to the full id when there is no slash", () => {
+  const parent = baseSkill();
+  const synthetic = synthesizeUnknownChainStep(parent, "bare-name");
+  assert.equal(synthetic.shortId, "bare-name");
+});
+
+test("deriveCategory: unknown chain step (signed parent, signed-required policy) → prohibited via signature gate", () => {
+  const parent = baseSkill({ signatureStatus: "valid" });
+  const synthetic = synthesizeUnknownChainStep(parent, "github.com/x/y/skills/missing");
+  const r = deriveCategory(
+    parent,
+    basePolicy({ signature: { require_signed: true } }),
+    [synthetic],
+  );
+  assert.equal(r.category, "prohibited");
+  // Attribution surfaces the chain step's shortId so the user sees what
+  // tripped the gate.
+  assert.ok(
+    r.derivedFrom.some((s) => s.includes("chain:missing") && s.includes("signature:unsigned")),
+    `expected chain:missing signature:unsigned in ${JSON.stringify(r.derivedFrom)}`,
+  );
+});
+
+test("deriveCategory: unknown chain step still escalates when signature gate is off (capability path)", () => {
+  // Defense in depth: even if the user disables require_signed (e.g. via
+  // --allow-unsigned in development), the synthetic step's network: ["*"]
+  // and non-idempotent flags MUST still escalate the union to at least
+  // explicit. A naive fix that only relied on the signature gate would
+  // leak the unknown step here.
+  const parent = baseSkill({ signatureStatus: "valid", network: [], filesystem: [], idempotent: true });
+  const synthetic = synthesizeUnknownChainStep(parent, "github.com/x/y/skills/missing");
+  const r = deriveCategory(
+    parent,
+    basePolicy({ signature: { require_signed: false } }),
+    [synthetic],
+  );
+  // Not regular — escalated by the synthetic step's worst-case capabilities.
+  assert.notEqual(r.category, "regular");
+  assert.equal(r.category, "explicit");
+  // All three capability dimensions of the synthetic step should be present
+  // in derivedFrom, attributed to the chain.
+  const reasons = r.derivedFrom.join(" | ");
+  assert.match(reasons, /chain:missing network:1/);
+  assert.match(reasons, /chain:missing filesystem:1/);
+  assert.match(reasons, /chain:missing non-idempotent/);
+});
+
+test("deriveCategory: mixed chain (one known clean step + one unknown) → still prohibited (worst wins)", () => {
+  // Regression catch: a chain with an innocent-looking known step in front
+  // of an unknown step must not let the unknown one slip through. The
+  // signature gate over the union is the dominant rule.
+  const parent = baseSkill({ signatureStatus: "valid" });
+  const knownClean = baseSkill({
+    id: "known-clean",
+    shortId: "known-clean",
+    signatureStatus: "valid",
+    network: [],
+    filesystem: [],
+    idempotent: true,
+  });
+  const synthetic = synthesizeUnknownChainStep(parent, "github.com/x/y/skills/missing");
+  const r = deriveCategory(
+    parent,
+    basePolicy({ signature: { require_signed: true } }),
+    [knownClean, synthetic],
+  );
+  assert.equal(r.category, "prohibited");
 });
