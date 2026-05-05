@@ -3,7 +3,7 @@
 //
 // v0.1.3 surface:
 //   harness new [--policy <path>]
-//   harness chat <sessionId> [--message <txt>] [--model <id>]
+//   harness chat <sessionId> [--message <txt> | --interactive | -i] [--model <id>]
 //   harness skills list
 //   harness skills add <pack@version>
 //   harness resume <sessionId>
@@ -35,13 +35,13 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.9";
+const HARNESS_VERSION = "0.2.0";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
 Usage:
   harness new [--policy <path>]
-  harness chat <sessionId> [--message <txt>] [--model <id>]
+  harness chat <sessionId> [--message <txt> | --interactive | -i] [--model <id>]
   harness resume <sessionId>
   harness sessions
   harness audit <sessionId> [--limit N]
@@ -239,6 +239,19 @@ const cmdNew = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const REPL_HELP = `
+Slash commands:
+  /help                show this help
+  /audit [--limit N]   show recent approvals + bank audit for this session
+  /recall <query>      semantic search over memory (requires policy.memory.enabled)
+  /memory list         shallow list of all memories
+  /memory stats        memory store stats
+  /clear               clear screen
+  /exit                end the REPL (Ctrl+D also works)
+
+Anything else is sent as a user message to the LLM.
+`;
+
 const cmdChat = async (args: Args): Promise<number> => {
   const sessionId = args.positional[0] as SessionId | undefined;
   if (!sessionId) {
@@ -246,89 +259,125 @@ const cmdChat = async (args: Args): Promise<number> => {
     return 64;
   }
 
-  // Read user message from --message or stdin.
-  let userMessage = args.flags.get("message");
-  if (typeof userMessage !== "string") {
-    if (process.stdin.isTTY) {
-      process.stderr.write(
-        "no --message provided and stdin is a TTY — pass --message \"...\" or pipe text in.\n",
-      );
-      return 64;
-    }
+  // Mode detection:
+  //  - --message <txt>            → one-shot, send that message and exit
+  //  - --interactive / -i         → force REPL even if stdin is non-TTY
+  //  - stdin is TTY & no --message → REPL by default
+  //  - stdin is non-TTY & no --message → read all stdin as one message
+  const messageFlag = args.flags.get("message");
+  const interactiveFlag =
+    args.flags.get("interactive") === true || args.flags.get("i") === true;
+
+  let oneShotMessage: string | undefined;
+  let repl = false;
+
+  if (typeof messageFlag === "string") {
+    oneShotMessage = messageFlag;
+  } else if (interactiveFlag) {
+    repl = true;
+  } else if (process.stdin.isTTY) {
+    repl = true;
+  } else {
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-    userMessage = Buffer.concat(chunks).toString("utf8").trim();
-    if (!userMessage) {
+    const piped = Buffer.concat(chunks).toString("utf8").trim();
+    if (!piped) {
       process.stderr.write("empty stdin\n");
       return 64;
     }
+    oneShotMessage = piped;
   }
 
+  // ── Build deps once. Both modes share these. ───────────────────────────
   const policyPath = resolvePolicyPath(args.flags);
   const policy = await loadPolicyOrDefault(policyPath);
-
   const embedder = resolveEmbedderOrStub();
   const bank = await ensureBank(policy, embedder);
-  const sessionsRoot = await ensureSessionsRoot(policy);
-
+  await ensureSessionsRoot(policy);
   const sessionStore = buildSessionStore(policy);
-
   const toolbox = createToolbox({ bank, embedder });
   const approval = createApprovalGate({
     policy,
-    audit: async () => {
-      // Session.appendTurn already persists approvals via `db approvals`.
-      // Hook here is a side-channel for real-time alerting / OTEL — no-op v0.
-    },
+    audit: async () => undefined,
   });
-
   const memory = await buildMemoryIfEnabled(policy, embedder);
 
   const modelOverride = args.flags.get("model");
-  let provider;
-  let providerChoice: "anthropic" | "cloudflare";
-  let providerModel: string;
-  try {
-    const resolved = resolveProviderFromEnv({
-      ...(typeof modelOverride === "string" ? { model: modelOverride } : {}),
-    });
-    provider = resolved.provider;
-    providerChoice = resolved.choice;
-    providerModel = resolved.model;
-  } catch (err) {
-    process.stderr.write(`${(err as Error).message}\n`);
-    return 78;
+
+  // Lazy provider resolution: REPL mode without creds opens fine and only
+  // fails when the user actually sends a message. Slash commands like
+  // /memory and /audit don't need an LLM and shouldn't be blocked.
+  let providerCache: {
+    provider: ReturnType<typeof resolveProviderFromEnv>["provider"];
+    choice: ReturnType<typeof resolveProviderFromEnv>["choice"];
+    model: string;
+  } | null = null;
+  let providerError: string | null = null;
+  const ensureProvider = (): typeof providerCache => {
+    if (providerCache !== null) return providerCache;
+    if (providerError !== null) throw new Error(providerError);
+    try {
+      const resolved = resolveProviderFromEnv({
+        ...(typeof modelOverride === "string" ? { model: modelOverride } : {}),
+      });
+      providerCache = {
+        provider: resolved.provider,
+        choice: resolved.choice,
+        model: resolved.model,
+      };
+      return providerCache;
+    } catch (err) {
+      providerError = (err as Error).message;
+      throw err;
+    }
+  };
+
+  // For one-shot mode we must resolve up-front. For REPL we defer.
+  if (oneShotMessage !== undefined) {
+    try {
+      const p = ensureProvider();
+      if (p) {
+        process.stderr.write(`[provider: ${p.choice} / ${p.model}]\n`);
+      }
+    } catch (err) {
+      process.stderr.write(`${(err as Error).message}\n`);
+      return 78;
+    }
+  } else {
+    // REPL mode — show provider state at startup but don't fail.
+    try {
+      const p = ensureProvider();
+      if (p) process.stderr.write(`[provider: ${p.choice} / ${p.model}]\n`);
+    } catch {
+      process.stderr.write(
+        `[provider: NOT configured — slash commands work, sending messages will fail]\n`,
+      );
+    }
   }
-  process.stderr.write(`[provider: ${providerChoice} / ${providerModel}]\n`);
   if (memory) {
     process.stderr.write(`[memory: enabled at ${policy.memory.rootDir}]\n`);
   }
 
-  // SIGINT handling: first press = soft cancel (signal the loop, save what
-  // we have); second press = hard exit. The loop checks signal between
-  // provider events.
-  const controller = new AbortController();
-  let interrupted = false;
-  const onSigint = (): void => {
-    if (interrupted) {
-      process.stderr.write("\n[double SIGINT — hard exit]\n");
-      process.exit(130);
-    }
-    interrupted = true;
-    process.stderr.write(
-      "\n[SIGINT — finishing current provider event then stopping; press Ctrl+C again to force]\n",
-    );
-    controller.abort();
-  };
-  process.on("SIGINT", onSigint);
-
-  try {
+  // ── One turn through the loop. Used by both one-shot and REPL paths. ──
+  const runOneTurn = async (
+    userMessage: string,
+    signal: AbortSignal,
+  ): Promise<{ stop: string; toolCalls: number; turnId: string }> => {
+    const p = ensureProvider();
+    if (!p) throw new Error("provider not initialized");
     const turn = await runTurn(
-      { provider, toolbox, approval, session: sessionStore, policy, ...(memory ? { memory } : {}) },
+      {
+        provider: p.provider,
+        toolbox,
+        approval,
+        session: sessionStore,
+        policy,
+        ...(memory ? { memory } : {}),
+      },
       {
         sessionId,
         userMessage,
-        signal: controller.signal,
+        signal,
         handlers: {
           onText: (delta) => process.stdout.write(delta),
           onThinking: (delta) => process.stderr.write(delta),
@@ -339,16 +388,160 @@ const cmdChat = async (args: Args): Promise<number> => {
         },
       },
     );
+    return {
+      stop: turn.output.stopReason,
+      toolCalls: turn.output.toolCalls.length,
+      turnId: turn.id,
+    };
+  };
 
-    process.stdout.write(`\n[stop: ${turn.output.stopReason}]\n`);
-    if (turn.output.toolCalls.length > 0) {
+  // SIGINT handling: same semantics for both modes — first press cancels
+  // the current turn, second press hard-exits.
+  let activeController: AbortController | null = null;
+  let interruptCount = 0;
+  const onSigint = (): void => {
+    interruptCount++;
+    if (interruptCount === 1) {
       process.stderr.write(
-        `[turn ${turn.id} ran ${turn.output.toolCalls.length} tool call(s)]\n`,
+        "\n[SIGINT — finishing current provider event then stopping; press Ctrl+C again to force]\n",
       );
+      activeController?.abort();
+    } else {
+      process.stderr.write("\n[double SIGINT — hard exit]\n");
+      process.exit(130);
     }
-    return turn.output.stopReason === "error" ? 1
-      : turn.output.stopReason === "cancelled" ? 130
-      : 0;
+  };
+  process.on("SIGINT", onSigint);
+
+  try {
+    // ── ONE-SHOT MODE ────────────────────────────────────────────────────
+    if (oneShotMessage !== undefined) {
+      activeController = new AbortController();
+      const result = await runOneTurn(oneShotMessage, activeController.signal);
+      process.stdout.write(`\n[stop: ${result.stop}]\n`);
+      if (result.toolCalls > 0) {
+        process.stderr.write(
+          `[turn ${result.turnId} ran ${result.toolCalls} tool call(s)]\n`,
+        );
+      }
+      return result.stop === "error" ? 1 : result.stop === "cancelled" ? 130 : 0;
+    }
+
+    // ── REPL MODE ────────────────────────────────────────────────────────
+    process.stderr.write(
+      `[REPL — session ${sessionId}. Type /help for commands, /exit or Ctrl+D to leave]\n`,
+    );
+
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: process.stdin.isTTY === true,
+    });
+
+    let lastExit = 0;
+    while (true) {
+      let line: string;
+      try {
+        line = await rl.question(`\nharness:${sessionId.slice(-6)}> `);
+      } catch {
+        // Ctrl+D / stream closed.
+        break;
+      }
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+
+      // Reset SIGINT counter for each new prompt.
+      interruptCount = 0;
+
+      // ── Slash commands ──────────────────────────────────────────────
+      if (trimmed.startsWith("/")) {
+        const [cmd, ...rest] = trimmed.slice(1).split(/\s+/);
+        // Inherit --policy from the parent invocation so memory/audit
+        // subcommands see the same policy the REPL was opened with.
+        const inheritedFlags = new Map<string, string | true>();
+        const parentPolicy = args.flags.get("policy");
+        if (typeof parentPolicy === "string") {
+          inheritedFlags.set("policy", parentPolicy);
+        }
+        switch (cmd) {
+          case "exit":
+          case "quit":
+            rl.close();
+            return lastExit;
+          case "help":
+            process.stdout.write(REPL_HELP);
+            break;
+          case "clear":
+            process.stdout.write("\x1b[2J\x1b[H");
+            break;
+          case "audit": {
+            const subFlags = new Map(inheritedFlags);
+            // Re-parse rest for --limit
+            for (let i = 0; i < rest.length; i++) {
+              const r = rest[i] ?? "";
+              if (r.startsWith("--")) {
+                const eq = r.indexOf("=");
+                if (eq > 0) subFlags.set(r.slice(2, eq), r.slice(eq + 1));
+                else if (rest[i + 1] !== undefined && !(rest[i + 1] ?? "").startsWith("--")) {
+                  subFlags.set(r.slice(2), rest[i + 1] ?? "");
+                  i++;
+                } else subFlags.set(r.slice(2), true);
+              }
+            }
+            await cmdAudit({ positional: [sessionId], flags: subFlags });
+            break;
+          }
+          case "recall":
+          case "search": {
+            const query = rest.join(" ");
+            if (!query) {
+              process.stderr.write("usage: /recall <query>\n");
+              break;
+            }
+            await cmdRecall(
+              { positional: query.split(/\s+/), flags: inheritedFlags },
+              "recall",
+            );
+            break;
+          }
+          case "memory": {
+            const sub = rest[0];
+            const subArgs: Args = {
+              positional: [sub ?? "", ...rest.slice(1)],
+              flags: inheritedFlags,
+            };
+            if (sub === "list") await cmdMemoryList(subArgs);
+            else if (sub === "stats") await cmdMemoryStats(subArgs);
+            else process.stderr.write("usage: /memory <list|stats>\n");
+            break;
+          }
+          default:
+            process.stderr.write(`unknown command: /${cmd}. Try /help\n`);
+        }
+        continue;
+      }
+
+      // ── Regular user message ────────────────────────────────────────
+      activeController = new AbortController();
+      try {
+        const result = await runOneTurn(trimmed, activeController.signal);
+        process.stdout.write(`\n[stop: ${result.stop}`);
+        if (result.toolCalls > 0) {
+          process.stdout.write(`, ${result.toolCalls} tool call(s)`);
+        }
+        process.stdout.write(`]\n`);
+        lastExit =
+          result.stop === "error" ? 1 : result.stop === "cancelled" ? 130 : 0;
+      } catch (err) {
+        process.stderr.write(`turn failed: ${(err as Error).message}\n`);
+        lastExit = 1;
+      } finally {
+        activeController = null;
+      }
+    }
+    rl.close();
+    return lastExit;
   } finally {
     process.removeListener("SIGINT", onSigint);
   }

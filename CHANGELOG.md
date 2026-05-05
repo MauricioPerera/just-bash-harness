@@ -2,6 +2,44 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.0] — 2026-05-05
+
+### Interactive REPL
+
+Major UX shift: `harness chat` is no longer one-shot. When stdin is a TTY (or `--interactive` / `-i` is passed), the harness opens a multi-turn read-eval-print loop. Each prompt invokes `runTurn`, persists, and recalls memory naturally across the conversation.
+
+Mode detection:
+- `--message <txt>` → one-shot, send and exit (unchanged behavior)
+- `--interactive` / `-i` → force REPL even with non-TTY stdin
+- TTY stdin + no `--message` → REPL by default
+- non-TTY stdin + no `--message` → reads all stdin as one message (legacy pipe path)
+
+### Slash commands
+
+In REPL mode, lines starting with `/` are intercepted by the harness:
+
+```
+/help                show this help
+/audit [--limit N]   show recent approvals + bank audit for this session
+/recall <query>      semantic search over memory
+/memory list         shallow list of all memories
+/memory stats        memory store stats
+/clear               clear screen
+/exit | /quit        end the REPL (Ctrl+D also works)
+```
+
+These work without a configured LLM provider — useful for inspection-only workflows. The `--policy` flag from the parent invocation is inherited by all slash commands.
+
+### Lazy provider resolution
+
+REPL opens cleanly even without `ANTHROPIC_API_KEY` / `CF_ACCOUNT_ID`+`CF_API_TOKEN`. Slash commands work; sending an actual user message lazily resolves the provider and fails clean if creds are missing. Banner shows `[provider: NOT configured ...]` so the user knows.
+
+### SIGINT semantics in REPL
+Same as v0.1.3 one-shot: first Ctrl+C cancels the in-flight turn, second hard-exits. Counter resets between prompts so each turn gets a fresh "first press cancels gracefully".
+
+### Why bump to 0.2.0
+This is a real UX shift, not just a feature addition. Pre-0.2.0, `harness chat` was a script-friendly one-shot. Post-0.2.0, the harness is interactively usable as an agent you talk to. The semver-significant change is that `harness chat <id>` (no args) now does something fundamentally different — opens a REPL — instead of erroring.
+
 ## [0.1.9] — 2026-05-05
 
 ### Bench command — retrieval accuracy regression

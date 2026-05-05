@@ -2,7 +2,7 @@
 
 Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-bash) and the [`agent-skills`](https://github.com/MauricioPerera/agent-skills) ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers.
 
-**Version:** 0.1.9 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + memory search/stats/export + compaction + AES-256-GCM at rest + **retrieval bench with optional threshold gate**. 133/133 unit tests pass. End-to-end validated against real Gemma 4 26B on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Distributable as a `harness` binary via `npm run build`.
+**Version:** 0.2.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction + AES-256-GCM at rest + retrieval bench + **interactive REPL with slash commands**. 133/133 unit tests pass. End-to-end validated against real Gemma 4 26B on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Distributable as a `harness` binary via `npm run build`.
 
 ## What it is
 
