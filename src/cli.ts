@@ -33,15 +33,19 @@ import { runTurn } from "./loop.js";
 import { createMemoryStore, type Memory } from "./memory.js";
 import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
+// Pull harness version from package.json so we have a single source of truth.
+// tsup inlines the import at build time; tsc validates against the JSON
+// schema. v0.2.5 -> v0.2.6 had the version stale in source vs package.json
+// because the constant was duplicated; this prevents that recurrence.
+import packageJson from "../package.json" with { type: "json" };
 
-// Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.2.6";
+const HARNESS_VERSION = packageJson.version;
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
 Usage:
   harness new [--policy <path>]
-  harness chat <sessionId> [--message <txt> | --interactive | -i] [--model <id>]
+  harness chat <sessionId> [--message <txt> | --interactive | -i] [--model <id>] [--allow-unsigned]
   harness resume <sessionId>
   harness sessions
   harness audit <sessionId> [--limit N]
@@ -94,6 +98,11 @@ Examples:
   # List recent sessions, dive into one
   harness sessions
   harness resume <id>
+
+  # Local development: drop the signed-skill requirement (use only when
+  # iterating on unsigned local packs; the deny error message also points
+  # at this flag whenever the signature gate fires).
+  harness chat "$SID" --allow-unsigned --message "test the local skill"
 `;
 
 // ─── shared deps ────────────────────────────────────────────────────────────
@@ -115,6 +124,14 @@ const loadPolicyOrDefault = async (path: string | undefined): Promise<Policy> =>
     throw new Error(msg);
   }
 };
+
+// Imported lazily here so test-only modules don't pull cli.ts via barrel.
+import { applyPolicyOverrides as applyPolicyOverridesPure } from "./policy-overrides.js";
+
+const applyPolicyOverrides = (policy: Policy, flags: Map<string, string | true>): Policy =>
+  applyPolicyOverridesPure(policy, flags, {
+    warn: (line) => process.stderr.write(line),
+  });
 
 const resolveEmbedderOrStub = (): EmbeddingProvider => {
   try {
@@ -290,7 +307,10 @@ const cmdChat = async (args: Args): Promise<number> => {
 
   // ── Build deps once. Both modes share these. ───────────────────────────
   const policyPath = resolvePolicyPath(args.flags);
-  const policy = await loadPolicyOrDefault(policyPath);
+  const policy = applyPolicyOverrides(
+    await loadPolicyOrDefault(policyPath),
+    args.flags,
+  );
   const embedder = resolveEmbedderOrStub();
   const bank = await ensureBank(policy, embedder);
   await ensureSessionsRoot(policy);

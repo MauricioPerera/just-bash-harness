@@ -2,6 +2,35 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.7] — 2026-05-05
+
+### External-review follow-up: low-cost DX + hygiene fixes
+
+Four small items raised in an external review of `0.2.6`. None changes runtime behavior in an incompatible way; (4) is purely additive, (1)-(3) are doc/structure only.
+
+#### (1) README + version banner reflect actual scope
+- Stale `~1700 LOC` claim replaced with current measurement (~4100 LOC in `src/`, ~2400 LOC of tests). Banner version + status line aligned with `0.2.7`.
+- New `## Intended audience` block in README states explicitly that this is **maintainer-grade software for a specific ecosystem**, not a generic agent harness aiming for mass adoption. Lists the open trade-offs (no built-in secret redaction in tool stdout, optional-but-not-rotatable encryption key, single-tenant by design) so consumers can self-select.
+
+#### (2) `HARNESS_VERSION` deduplicated against `package.json`
+The constant in `src/cli.ts` is now imported from `package.json` via `import packageJson from "../package.json" with { type: "json" }`. tsup inlines the value at build time. The duplication regression that hit `v0.2.5` (constant stayed at `0.2.4` while `package.json` already said `0.2.5`) cannot recur. Required dropping `rootDir: "src"` from `tsconfig.json` so the JSON import resolves; `tsc --noEmit` still validates the same set of files via `include`.
+
+#### (3) `@rckflr/agent-skills-cli` pinned to `~2.3.0` (patch-only)
+Was `^2.2.0` after the publish prep, which would have allowed any `2.x` minor bump to land. Since `createBankBash` is still INTERNAL-tier in the CLI (acknowledged in DESIGN §9 / COEVOLUTION O1), the harness is sensitive to non-breaking-but-internal changes. Patch-only range gives bug fixes without exposing us to API drift until `createBankBash` is promoted to STABLE. The harness is not the only consumer that should care about this; the policy is documented in CHANGELOG so future releases revisit it intentionally.
+
+#### (4) Better signature-gate UX
+The default `policy.signature.require_signed: true` was the most reliable way to confuse a new user: an unsigned local skill resolves to `prohibited` and the deny line in the tool result was just `denied by approval gate (signature:unsigned)`. Two fixes:
+
+- **Friendlier deny error in `loop.ts`.** When `derivedFrom` mentions `signature:`, the stderr now reads:
+  > denied by approval gate: skill is unsigned and policy.signature.require_signed=true. Reason chain: signature:unsigned. Fix options: (a) sign the skill / pack via gitsign or GitHub OIDC, (b) add a policy override entry mapping this skill id to 'regular' or 'explicit', (c) re-invoke with --allow-unsigned (development only — drops the signature gate for the entire policy).
+- **New `--allow-unsigned` flag for `harness chat`.** Per-invocation override: flips `signature.require_signed` to `false` in memory for that command only. Unsigned skills then fall through to the capability heuristics and most resolve as `explicit` (TTY prompt) instead of being silently denied. A stderr line confirms the flag is active. New module `src/policy-overrides.ts` holds the pure transformer (5 unit tests added), invoked from `cli.ts`.
+
+### Tests
+- 142 → 147 unit tests (5 new in `policy-overrides.test.ts`). Typecheck clean.
+
+### Acknowledgement
+External review of `0.2.6` flagged each of the four items above. Larger items from the same review (secret redaction in tool stdout, approval-fatigue metrics, encryption key rotation, per-provider rate-limit/backoff, compaction-with-summary) need design before code and are deferred — left as separate issues in the tracker.
+
 ## [0.2.6] — 2026-05-05
 
 ### First npm-tag-aligned release

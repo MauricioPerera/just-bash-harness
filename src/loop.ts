@@ -312,13 +312,26 @@ export const runTurn = async (
         args: action.args,
       });
       if (decision === "deny") {
+        // Friendlier error when signature was the cause of the deny — this
+        // is the most common DX trip for new users (default policy enforces
+        // signed-only). Otherwise fall back to the raw derivedFrom list.
+        const signatureReason = derived.derivedFrom.find((r) =>
+          r.includes("signature:"),
+        );
+        const stderr = signatureReason
+          ? `denied by approval gate: skill is unsigned and policy.signature.require_signed=true. ` +
+            `Reason chain: ${derived.derivedFrom.join(", ")}. ` +
+            `Fix options: (a) sign the skill / pack via gitsign or GitHub OIDC, ` +
+            `(b) add a policy override entry mapping this skill id to 'regular' or 'explicit', ` +
+            `(c) re-invoke with --allow-unsigned (development only — drops the signature gate for the entire policy).`
+          : `denied by approval gate (${derived.derivedFrom.join(",")})`;
         nextResults.push({
           callId: call.id,
           result: {
             ok: false,
             command: "",
             stdout: "",
-            stderr: `denied by approval gate (${derived.derivedFrom.join(",")})`,
+            stderr,
             exitCode: 126,
             elapsedMs: 0,
             timedOut: false,

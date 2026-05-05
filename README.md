@@ -2,11 +2,20 @@
 
 Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-bash) and the [`agent-skills`](https://github.com/MauricioPerera/agent-skills) ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers.
 
-**Version:** 0.2.2 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction + AES-256-GCM at rest + retrieval bench + interactive REPL + chains + **Hermes-style `<tool_call>` parser** (works with Hermes 2 Pro alongside Granite/Gemma/Llama). 134/134 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Distributable as a `harness` binary via `npm run build`.
+**Version:** 0.2.7 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction + AES-256-GCM at rest + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + **Hermes-style `<tool_call>` parser** (works with Hermes 2 Pro alongside Granite/Gemma/Llama) + AbortSignal propagation + per-tool-call rationale tracking + Hermes parser diagnostics. 142/142 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry.
+
+## Intended audience
+
+This is **maintainer-grade software for a specific ecosystem**, not a generic agent harness aiming for mass adoption. It's designed for:
+
+- The maintainer of the `agent-skills` / `just-bash` stack (`@rckflr/agent-skills-cli`, `just-bash-data`, `just-bash-wiki`) and tightly-integrated downstreams.
+- Early-adopter engineers comfortable reading the source, willing to track a small stack of related packages, and able to make their own calls on the open trade-offs (no built-in secret redaction in tool stdout, optional-but-not-rotatable encryption key, single-tenant by design).
+
+If you want a broader-purpose agent runtime with multi-tenancy, GUI, and strong integration with arbitrary tool ecosystems, this isn't it. If you want a small, auditable loop that composes the `agent-skills` spec primitives end-to-end, it is.
 
 ## What it is
 
-A thin orchestrator (~1700 LOC TypeScript) that:
+A thin orchestrator (~4100 LOC TypeScript in `src/`, plus ~2400 LOC of unit tests) that:
 
 - Runs a turn loop: prompt → tool calls → results → next turn → end.
 - Resolves tool calls to **agent-skills** subscribed in a local `FileBank`.
@@ -47,6 +56,19 @@ echo "say hi using the available tools" | node dist/cli.js chat "$SID"
 # Resume later
 node dist/cli.js resume "$SID"
 ```
+
+#### Working with unsigned skills (local development)
+
+The default policy is `signature.require_signed: true`, so any pack whose git tag isn't gitsign / GitHub-OIDC verified resolves to category `prohibited` and gets hard-denied at the approval gate. The deny error in tool stdout now points at three remediations: sign the tag, add a per-skill override, or pass `--allow-unsigned` to the chat command for development:
+
+```bash
+# Drop the signature gate for one chat invocation (development only)
+harness chat "$SID" --allow-unsigned --message "test the local skill"
+```
+
+`--allow-unsigned` flips `signature.require_signed` to `false` in memory for that invocation only. Unsigned skills then fall through to the capability heuristics (network/filesystem/idempotency) and most will resolve as `explicit` — meaning the user gets prompted at the TTY before each call, instead of being silently denied.
+
+For a permanent override on a specific trusted skill, use `policy.skills.overrides[skill.id] = "regular" | "explicit"` in your policy YAML.
 
 ### Install globally
 
