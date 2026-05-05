@@ -203,4 +203,23 @@ export interface Policy {
     sessionsRoot: string;
     auditLogPath?: string;     // optional override; default uses bank's audit
   };
+  /** Memory layer (just-bash-wiki backed). Opt-in. */
+  memory: {
+    /** Master switch. When false, no memory dep is constructed. */
+    enabled: boolean;
+    /** Wiki bank dir. Each scope (per-user / per-project) gets its own. */
+    rootDir: string;
+    recall: {
+      /** Top-K hits before charBudget filter. */
+      topK: number;
+      /** Approximate char cap across recalled snippets injected into prompt. */
+      charBudget: number;
+    };
+    persist: {
+      /** Persist user msg + final assistant text after each end_turn. */
+      autoPersistTurns: boolean;
+      /** Skip turns where the assistant text is shorter than this many chars. */
+      minMessageLength: number;
+    };
+  };
 }

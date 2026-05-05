@@ -2,6 +2,38 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.5] — 2026-05-04
+
+### Cross-session memory (just-bash-wiki integration)
+The harness now uses **all four** repos in the stack — wiki was the missing piece.
+
+- **`src/memory.ts`** — new `Memory` interface (`remember` / `recall` / `forget` / `list` / `size`) backed by `just-bash-wiki` with `ReadWriteFs` for disk persistence. Each memory becomes a `wiki source` with kind/sessionId metadata; recall embeds the query and uses `wiki search source_embeddings` for similarity ranking, then enforces an optional `charBudget`. Always returns at least one record even if it exceeds budget (avoids "I have it but the cap hides it").
+- **Loop integration** — when `policy.memory.enabled`, `runTurn` recalls relevant memories from the user message **before** invoking the provider and injects them into `systemPrompt` as a "Relevant memories from past turns" block. After `end_turn`, it auto-persists the user message + final assistant text as a turn-kind memory (gated by `policy.memory.persist.autoPersistTurns` + `minMessageLength`). Failures in either path are non-fatal — log to onThinking and continue.
+- **Policy schema** — new top-level `memory: { enabled, rootDir, recall: { topK, charBudget }, persist: { autoPersistTurns, minMessageLength } }`. Default `enabled: false` (opt-in). YAML validated by `policy.ts` with per-key fallbacks.
+
+### CLI subcommands
+- **`harness recall <query> [--topK N] [--budget N]`** — list memories ranked by similarity to the query.
+- **`harness memory list [--kind <k>] [--limit N]`** — shallow listing (id, kind, ts, title).
+- **`harness memory forget <id>` / `--kind <k>` / `--session <id>`** — delete by id or bulk by filter.
+- **`harness memory remember "<content>" [--kind k] [--session id]`** — explicit fact storage.
+- All require `policy.memory.enabled: true` (otherwise exit 78 with a clear hint).
+
+### Tests
+- **12 new unit tests in `src/memory.test.ts`** — toy embedder (no live LLM), covering: empty store, similarity ranking, kind filter, sessionId filter, charBudget cap, single-large-record budget exemption, forget by id / kind / sessionId, list with kind filter.
+- **`scratch/live-test-memory.ts`** — cross-session smoke (no real LLM): a SpyProvider captures the systemPrompt; verifies that a session-1 turn populates memory and that session-2's systemPrompt INCLUDES the recalled content. **5/5 checks pass.**
+- Total: **121 → 133 unit tests** in ~34s.
+
+### Bug fix during P4
+- `createMemoryStore` originally constructed `Bash` without an `fs` option, defaulting to `InMemoryFs` — memories vanished on process exit. Fixed by passing `new ReadWriteFs({ root: opts.rootDir })`. Smoke tested across two CLI invocations: `remember` in process A, `recall` in process B both see the data.
+
+### Stack integration after P4
+| Repo | Used by harness as of v0.1.5 |
+|---|---|
+| `agent-skills` (spec) | identity, frontmatter, applicable_when (P6), trust levels |
+| `agent-skills-cli` | FileBank, runQuery, runExec, embedders, signature verifiers |
+| `just-bash-data` | session storage via `db sessions/turns/approvals` (transitively) |
+| `just-bash-wiki` | **NEW: cross-session memory + auto-persist of turns** |
+
 ## [0.1.4] — 2026-05-04
 
 ### `applicable_when` filter (spec §2.7)

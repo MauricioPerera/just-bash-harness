@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { deriveCategory, promptUserApproval } from "./approval.js";
+import type { Memory, MemoryRecord } from "./memory.js";
 import type {
   ApprovalGate,
   ApprovalRecord,
@@ -26,7 +27,23 @@ export interface LoopDeps {
   approval: ApprovalGate;
   session: SessionStore;
   policy: Policy;
+  /** Optional cross-session memory. When present, recalled before each
+   *  user turn and the resulting user/assistant exchange is persisted
+   *  after end_turn (subject to policy.memory.persist settings). */
+  memory?: Memory;
 }
+
+/** Render recalled memories into a system-prompt block. Order preserved
+ *  (similarity already applied in recall). */
+const formatMemoryContext = (records: readonly MemoryRecord[]): string =>
+  records
+    .map((r, i) => {
+      const sim = r.similarity !== undefined
+        ? ` similarity=${r.similarity.toFixed(3)}`
+        : "";
+      return `[${i + 1}] ${r.kind} (${r.ts}${sim}):\n${r.content}`;
+    })
+    .join("\n\n");
 
 export interface LoopHandlers {
   onText?: (delta: string) => void;
@@ -66,6 +83,34 @@ export const runTurn = async (
 
   const tools = await deps.toolbox.list();
 
+  // Recall memory once per `runTurn` invocation, keyed off the user's
+  // current message. Cross-session by default; per-session scope is opted
+  // in via deps.memory's caller (typically the CLI passes sessionId in
+  // policy-driven setups).
+  let memoryBlock = "";
+  if (
+    deps.memory &&
+    deps.policy.memory.enabled &&
+    opts.userMessage !== undefined &&
+    opts.userMessage.trim().length > 0
+  ) {
+    try {
+      const recalled = await deps.memory.recall(opts.userMessage, {
+        topK: deps.policy.memory.recall.topK,
+        charBudget: deps.policy.memory.recall.charBudget,
+      });
+      if (recalled.length > 0) {
+        memoryBlock = `\n\n## Relevant memories from past turns\n${formatMemoryContext(recalled)}`;
+      }
+    } catch (err) {
+      // Memory failures are non-fatal — log to onText is too noisy, just
+      // emit to stderr if a thinking handler exists.
+      opts.handlers?.onThinking?.(
+        `[memory.recall failed: ${(err as Error).message}]\n`,
+      );
+    }
+  }
+
   // Outer driver. We may run multiple provider.turn() rounds within ONE
   // user-message turn if the model emits tool calls and then expects to
   // continue. That's what 'tool_use' stop reason means.
@@ -87,8 +132,11 @@ export const runTurn = async (
       break;
     }
 
+    const baseSystem = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     const input: TurnInput = {
-      systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
+      // Append recalled memories to the system prompt. The block is empty
+      // when memory is disabled / no recall hit, so this is a no-op cost.
+      systemPrompt: baseSystem + memoryBlock,
       history: session.turns,
       ...(pendingUser !== undefined ? { user: pendingUser } : {}),
       ...(pendingResults !== undefined ? { toolResults: pendingResults } : {}),
@@ -243,5 +291,35 @@ export const runTurn = async (
   };
 
   await deps.session.appendTurn(opts.sessionId, turn);
+
+  // Persist memory: only on a clean end_turn AND only if the user said
+  // something AND the assistant's reply is non-trivial. Tool-only turns
+  // (no text output) don't make useful memories on their own.
+  const persistCfg = deps.policy.memory.persist;
+  const finalText = collectedText.join("");
+  if (
+    deps.memory &&
+    deps.policy.memory.enabled &&
+    persistCfg.autoPersistTurns &&
+    finalStop === "end_turn" &&
+    opts.userMessage !== undefined &&
+    finalText.length >= persistCfg.minMessageLength
+  ) {
+    try {
+      await deps.memory.remember(
+        `User: ${opts.userMessage}\nAssistant: ${finalText}`,
+        {
+          kind: "turn",
+          sessionId: String(opts.sessionId),
+          ts: turn.ts,
+        },
+      );
+    } catch (err) {
+      opts.handlers?.onThinking?.(
+        `[memory.remember failed: ${(err as Error).message}]\n`,
+      );
+    }
+  }
+
   return turn;
 };

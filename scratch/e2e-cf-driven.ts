@@ -132,6 +132,12 @@ const main = async (): Promise<void> => {
       },
       limits: { maxTurns: 50, maxToolCallsPerTurn: 10, maxWallclockMs: 60_000 },
       paths: { sessionsRoot },
+      memory: {
+        enabled: false,
+        rootDir: "",
+        recall: { topK: 5, charBudget: 6000 },
+        persist: { autoPersistTurns: false, minMessageLength: 20 },
+      },
     };
 
     const sessionStore = createSessionStore({

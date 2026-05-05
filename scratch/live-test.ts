@@ -118,6 +118,12 @@ const main = async (): Promise<void> => {
         maxWallclockMs: 60_000,
       },
       paths: { sessionsRoot, skillsBankDir: skillsRoot },
+      memory: {
+        enabled: false,
+        rootDir: "",
+        recall: { topK: 5, charBudget: 6000 },
+        persist: { autoPersistTurns: false, minMessageLength: 20 },
+      },
     };
 
     const sessionStore = createSessionStore({

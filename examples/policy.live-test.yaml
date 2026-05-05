@@ -4,6 +4,17 @@ paths:
   sessionsRoot: C:\Users\Rckflr\.harness\sessions
   skillsBankDir: C:\Users\Rckflr\.harness\skills-bank-live
 
+# Cross-session memory layer (just-bash-wiki backed)
+memory:
+  enabled: true
+  rootDir: C:\Users\Rckflr\.harness\memory\live-test
+  recall:
+    topK: 5
+    charBudget: 4000
+  persist:
+    autoPersistTurns: true
+    minMessageLength: 20
+
 # Live test against agent-skills-pack which doesn't have signed tags yet.
 # In production this should be true.
 signature:

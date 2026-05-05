@@ -29,11 +29,12 @@ import { createApprovalGate, promptUserApproval } from "./approval.js";
 import { resolveProviderFromEnv } from "./provider.js";
 import { loadPolicy, DEFAULT_POLICY } from "./policy.js";
 import { runTurn } from "./loop.js";
+import { createMemoryStore, type Memory } from "./memory.js";
 import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.4";
+const HARNESS_VERSION = "0.1.5";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
@@ -45,6 +46,10 @@ Usage:
   harness audit <sessionId> [--limit N]
   harness skills list [--all]
   harness skills add <pack@version>
+  harness recall <query> [--topK N] [--budget N]
+  harness memory list [--kind <k>] [--limit N]
+  harness memory forget <id>          (or --kind <k> | --session <id>)
+  harness memory remember <content> [--kind <k>] [--session <id>]
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -138,6 +143,18 @@ const ensureSessionsRoot = async (policy: Policy): Promise<string> => {
   return dir;
 };
 
+/** Construct a Memory dep when policy.memory.enabled. Re-uses the embedder
+ *  the harness picked for retrieval so memory + skill recall vectors stay
+ *  in the same model space. */
+const buildMemoryIfEnabled = async (
+  policy: Policy,
+  embedder: EmbeddingProvider,
+): Promise<Memory | undefined> => {
+  if (!policy.memory.enabled) return undefined;
+  await mkdir(policy.memory.rootDir, { recursive: true });
+  return createMemoryStore({ rootDir: policy.memory.rootDir, embedder });
+};
+
 /** Wrap a subcommand so that domain errors print as `harness <cmd>: <msg>`
  *  rather than reaching main's generic `fatal:` handler. Returns exit code 1
  *  on caught exception. */
@@ -227,6 +244,8 @@ const cmdChat = async (args: Args): Promise<number> => {
     },
   });
 
+  const memory = await buildMemoryIfEnabled(policy, embedder);
+
   const modelOverride = args.flags.get("model");
   let provider;
   let providerChoice: "anthropic" | "cloudflare";
@@ -243,6 +262,9 @@ const cmdChat = async (args: Args): Promise<number> => {
     return 78;
   }
   process.stderr.write(`[provider: ${providerChoice} / ${providerModel}]\n`);
+  if (memory) {
+    process.stderr.write(`[memory: enabled at ${policy.memory.rootDir}]\n`);
+  }
 
   // SIGINT handling: first press = soft cancel (signal the loop, save what
   // we have); second press = hard exit. The loop checks signal between
@@ -264,7 +286,7 @@ const cmdChat = async (args: Args): Promise<number> => {
 
   try {
     const turn = await runTurn(
-      { provider, toolbox, approval, session: sessionStore, policy },
+      { provider, toolbox, approval, session: sessionStore, policy, ...(memory ? { memory } : {}) },
       {
         sessionId,
         userMessage,
@@ -487,6 +509,137 @@ const cmdAudit = async (args: Args): Promise<number> => {
   return 0;
 };
 
+// ─── memory subcommands ────────────────────────────────────────────────────
+
+const requireMemory = async (
+  args: Args,
+): Promise<{ memory: Memory; policy: Policy } | { error: string }> => {
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+  if (!policy.memory.enabled) {
+    return {
+      error: `memory disabled in policy. Pass --policy with memory.enabled: true (or use examples/policy.live-test.yaml as a starting point).`,
+    };
+  }
+  const embedder = resolveEmbedderOrStub();
+  const memory = await buildMemoryIfEnabled(policy, embedder);
+  if (!memory) return { error: "memory init failed" };
+  return { memory, policy };
+};
+
+const cmdRecall = async (args: Args): Promise<number> => {
+  const query = args.positional.join(" ");
+  if (!query) {
+    process.stderr.write("harness recall: <query> required\n");
+    return 64;
+  }
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness recall: ${got.error}\n`);
+    return 78;
+  }
+  const topK = Number(args.flags.get("topK") ?? "5") || 5;
+  const budgetFlag = args.flags.get("budget");
+  const charBudget = typeof budgetFlag === "string"
+    ? Number(budgetFlag) || undefined
+    : undefined;
+
+  const hits = await got.memory.recall(query, {
+    topK,
+    ...(charBudget !== undefined ? { charBudget } : {}),
+  });
+  if (hits.length === 0) {
+    process.stderr.write("no matches.\n");
+    return 0;
+  }
+  process.stdout.write(`# ${hits.length} hit(s) for: ${query}\n\n`);
+  for (let i = 0; i < hits.length; i++) {
+    const h = hits[i]!;
+    const sim = h.similarity !== undefined ? `  similarity=${h.similarity.toFixed(3)}` : "";
+    const session = h.sessionId !== undefined ? `  session=${h.sessionId}` : "";
+    process.stdout.write(`[${i + 1}] ${h.kind}  ${h.ts}${sim}${session}\n`);
+    process.stdout.write(`    ${h.content.replace(/\n/g, "\n    ")}\n\n`);
+  }
+  return 0;
+};
+
+const cmdMemoryList = async (args: Args): Promise<number> => {
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness memory list: ${got.error}\n`);
+    return 78;
+  }
+  const limit = Number(args.flags.get("limit") ?? "100") || 100;
+  const kindFlag = args.flags.get("kind");
+  const records = await got.memory.list({
+    limit,
+    ...(typeof kindFlag === "string" ? { kind: kindFlag } : {}),
+  });
+  if (records.length === 0) {
+    process.stderr.write("no memories.\n");
+    return 0;
+  }
+  process.stderr.write(`# ${records.length} memorie(s):\n`);
+  for (const r of records) {
+    process.stdout.write(`${r.id}  ${r.kind.padEnd(10)} ${r.ts}  ${r.title}\n`);
+  }
+  return 0;
+};
+
+const cmdMemoryForget = async (args: Args): Promise<number> => {
+  // positional[0] is "forget" (parent), positional[1] is the id (if any).
+  const id = args.positional[1];
+  const kind = typeof args.flags.get("kind") === "string"
+    ? (args.flags.get("kind") as string)
+    : undefined;
+  const sessionId = typeof args.flags.get("session") === "string"
+    ? (args.flags.get("session") as string)
+    : undefined;
+  if (!id && !kind && !sessionId) {
+    process.stderr.write(
+      "harness memory forget: pass <id>, --kind <k>, or --session <id>\n",
+    );
+    return 64;
+  }
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness memory forget: ${got.error}\n`);
+    return 78;
+  }
+  const filter = {
+    ...(id !== undefined ? { id } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  };
+  const deleted = await got.memory.forget(filter);
+  process.stdout.write(`forgot ${deleted} memorie(s)\n`);
+  return 0;
+};
+
+const cmdMemoryRemember = async (args: Args): Promise<number> => {
+  // positional[0] is "remember", positional[1..] is the content
+  const content = args.positional.slice(1).join(" ");
+  if (!content) {
+    process.stderr.write("harness memory remember: <content> required\n");
+    return 64;
+  }
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness memory remember: ${got.error}\n`);
+    return 78;
+  }
+  const kind = typeof args.flags.get("kind") === "string"
+    ? (args.flags.get("kind") as string)
+    : "fact";
+  const sessionFlag = args.flags.get("session");
+  const id = await got.memory.remember(content, {
+    kind,
+    ...(typeof sessionFlag === "string" ? { sessionId: sessionFlag } : {}),
+  });
+  process.stdout.write(`${id}\n`);
+  return 0;
+};
+
 // ─── dispatcher ─────────────────────────────────────────────────────────────
 
 const main = async (argv: readonly string[]): Promise<number> => {
@@ -513,6 +666,27 @@ const main = async (argv: readonly string[]): Promise<number> => {
       return withCommandError("sessions", () => cmdSessions(args));
     case "audit":
       return withCommandError("audit", () => cmdAudit(args));
+    case "recall":
+      return withCommandError("recall", () => cmdRecall(args));
+    case "memory":
+      switch (args.positional[0]) {
+        case "list":
+          return withCommandError("memory list", () => cmdMemoryList(args));
+        case "forget":
+          return withCommandError("memory forget", () => cmdMemoryForget(args));
+        case "remember":
+          return withCommandError("memory remember", () =>
+            cmdMemoryRemember(args),
+          );
+        case undefined:
+          process.stderr.write("usage: harness memory <list|forget|remember>\n");
+          return 64;
+        default:
+          process.stderr.write(
+            `unknown memory subcommand: ${args.positional[0]}\n`,
+          );
+          return 64;
+      }
     case "skills":
       switch (args.positional[0]) {
         case "list":

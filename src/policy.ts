@@ -41,6 +41,12 @@ export const DEFAULT_POLICY: Policy = {
   paths: {
     sessionsRoot: join(homedir(), ".harness", "sessions"),
   },
+  memory: {
+    enabled: false,
+    rootDir: join(homedir(), ".harness", "memory", "default"),
+    recall: { topK: 5, charBudget: 6000 },
+    persist: { autoPersistTurns: true, minMessageLength: 20 },
+  },
 };
 
 export const loadPolicy = async (path: string): Promise<Policy> => {
@@ -127,6 +133,41 @@ const mergeWithDefaults = (input: unknown): Policy => {
       : {}),
   };
 
+  // memory
+  const memIn = isObject(input.memory) ? input.memory : {};
+  const memRecallIn = isObject(memIn.recall) ? memIn.recall : {};
+  const memPersistIn = isObject(memIn.persist) ? memIn.persist : {};
+  const memory: Policy["memory"] = {
+    enabled:
+      typeof memIn.enabled === "boolean"
+        ? memIn.enabled
+        : DEFAULT_POLICY.memory.enabled,
+    rootDir:
+      typeof memIn.rootDir === "string"
+        ? memIn.rootDir
+        : DEFAULT_POLICY.memory.rootDir,
+    recall: {
+      topK:
+        typeof memRecallIn.topK === "number"
+          ? memRecallIn.topK
+          : DEFAULT_POLICY.memory.recall.topK,
+      charBudget:
+        typeof memRecallIn.charBudget === "number"
+          ? memRecallIn.charBudget
+          : DEFAULT_POLICY.memory.recall.charBudget,
+    },
+    persist: {
+      autoPersistTurns:
+        typeof memPersistIn.autoPersistTurns === "boolean"
+          ? memPersistIn.autoPersistTurns
+          : DEFAULT_POLICY.memory.persist.autoPersistTurns,
+      minMessageLength:
+        typeof memPersistIn.minMessageLength === "number"
+          ? memPersistIn.minMessageLength
+          : DEFAULT_POLICY.memory.persist.minMessageLength,
+    },
+  };
+
   return {
     version: 1,
     skills: { subscribed, overrides },
@@ -134,5 +175,6 @@ const mergeWithDefaults = (input: unknown): Policy => {
     approval: { matrix },
     limits,
     paths,
+    memory,
   };
 };
