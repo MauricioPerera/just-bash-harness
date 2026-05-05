@@ -266,6 +266,25 @@ export interface Policy {
       enabled: boolean;
       /** Active history is the last `windowSize` turns. >= 1. */
       windowSize: number;
+      /**
+       * Optional rolling summary. When enabled, on each turn where
+       * compaction drops history the harness asks the active provider
+       * for a structured summary of the dropped turns, prepends it to
+       * subsequent system prompts, and persists it to memory as a
+       * `compaction-summary` kind record.
+       *
+       * Cost: every triggered compaction does one extra provider call
+       * with the dropped turns as input + at most `maxTokens` of output.
+       * For long sessions the cost is the user's responsibility — opt-in.
+       *
+       * Default disabled — the slice + memory recall path from v0.1.7
+       * is preserved when summarize.enabled is false.
+       */
+      summarize?: {
+        enabled: boolean;
+        /** Cap on the summary call's output. */
+        maxTokens: number;
+      };
     };
   };
 }

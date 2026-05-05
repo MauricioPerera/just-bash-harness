@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { createCloudflareProvider } from "./provider-cloudflare.js";
+import {
+  createCloudflareProvider,
+  parseRetryAfter,
+  computeBackoffMs,
+} from "./provider-cloudflare.js";
 import type {
   Provider,
   SkillId,
@@ -698,4 +702,191 @@ test("cloudflare provider: args fully optional → no required field in schema",
   );
   const params = body!.tools[0]!.function.parameters;
   assert.ok(!("required" in params), "required key must be absent when nothing required");
+});
+
+// ─── retry policy unit tests (pure helpers) ────────────────────────────────
+
+test("parseRetryAfter: integer seconds", () => {
+  assert.equal(parseRetryAfter("5"), 5000);
+  assert.equal(parseRetryAfter("0"), 0);
+  assert.equal(parseRetryAfter("120"), 120_000);
+});
+
+test("parseRetryAfter: fractional seconds", () => {
+  assert.equal(parseRetryAfter("1.5"), 1500);
+});
+
+test("parseRetryAfter: HTTP date in the future", () => {
+  const now = Date.parse("2026-05-05T12:00:00Z");
+  const future = "Tue, 05 May 2026 12:00:30 GMT";
+  assert.equal(parseRetryAfter(future, now), 30_000);
+});
+
+test("parseRetryAfter: HTTP date in the past clamps to 0", () => {
+  const now = Date.parse("2026-05-05T12:00:00Z");
+  const past = "Tue, 05 May 2026 11:59:00 GMT";
+  assert.equal(parseRetryAfter(past, now), 0);
+});
+
+test("parseRetryAfter: garbage returns null", () => {
+  assert.equal(parseRetryAfter("not a duration"), null);
+  assert.equal(parseRetryAfter(""), null);
+  assert.equal(parseRetryAfter(null), null);
+});
+
+test("computeBackoffMs: exponential progression with deterministic random", () => {
+  const policy = { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 10_000, retryableStatuses: [429] };
+  // Full jitter: floor(rand * cap). With rand=0.999 and cap=500: floor(499.5)=499.
+  // Cap at attempt N is min(baseDelay * 2^(N-1), maxDelay).
+  const r1 = computeBackoffMs(1, policy, () => 0.999);
+  const r2 = computeBackoffMs(2, policy, () => 0.999);
+  const r3 = computeBackoffMs(3, policy, () => 0.999);
+  assert.equal(r1, Math.floor(0.999 * 500));   // 499
+  assert.equal(r2, Math.floor(0.999 * 1000));  // 999
+  assert.equal(r3, Math.floor(0.999 * 2000));  // 1998
+});
+
+test("computeBackoffMs: caps at maxDelayMs", () => {
+  const policy = { maxRetries: 3, baseDelayMs: 1000, maxDelayMs: 2000, retryableStatuses: [429] };
+  // attempt 5: 1000*2^4 = 16000, capped to 2000. floor(0.999 * 2000) = 1998.
+  const r = computeBackoffMs(5, policy, () => 0.999);
+  assert.equal(r, 1998);
+});
+
+test("computeBackoffMs: full-jitter at zero returns zero", () => {
+  const policy = { maxRetries: 3, baseDelayMs: 500, maxDelayMs: 10_000, retryableStatuses: [429] };
+  assert.equal(computeBackoffMs(1, policy, () => 0), 0);
+});
+
+// ─── retry policy integration: actual fetch-loop behavior ──────────────────
+
+test("retry: 429 once → success on second attempt", async () => {
+  const calls: { attempt: number; status: number }[] = [];
+  let attempt = 0;
+  const fetchMock: typeof fetch = async () => {
+    attempt++;
+    calls.push({ attempt, status: attempt === 1 ? 429 : 200 });
+    if (attempt === 1) {
+      return new Response("rate limited", {
+        status: 429,
+        headers: { "retry-after": "0" },
+      });
+    }
+    return sseResponse(["data: [DONE]\n\n"]);
+  };
+  const delays: number[] = [];
+  const provider = createCloudflareProvider({
+    accountId: "x",
+    apiToken: "y",
+    fetchFn: fetchMock,
+    delayFn: async (ms) => {
+      delays.push(ms);
+    },
+    retry: { maxRetries: 3 },
+  });
+  const events = await collect(provider, minimalInput());
+  assert.equal(attempt, 2);
+  assert.deepEqual(calls.map((c) => c.status), [429, 200]);
+  assert.equal(delays.length, 1);
+  assert.equal(delays[0], 0); // honored Retry-After: 0
+  // Final event should be end_turn, not error.
+  const stop = events.findLast((e) => e.type === "stop");
+  assert.equal(stop?.type === "stop" && stop.reason, "end_turn");
+});
+
+test("retry: 503 chain exhausts maxRetries → error surfaced cleanly", async () => {
+  let attempt = 0;
+  const fetchMock: typeof fetch = async () => {
+    attempt++;
+    return new Response("unavailable", { status: 503 });
+  };
+  const delays: number[] = [];
+  const provider = createCloudflareProvider({
+    accountId: "x",
+    apiToken: "y",
+    fetchFn: fetchMock,
+    delayFn: async (ms) => {
+      delays.push(ms);
+    },
+    retry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 1 },
+  });
+  const events = await collect(provider, minimalInput());
+  // 1 initial + 2 retries = 3 attempts total.
+  assert.equal(attempt, 3);
+  assert.equal(delays.length, 2);
+  const stop = events.find((e) => e.type === "stop");
+  assert.equal(stop?.type === "stop" && stop.reason, "error");
+  const errText = events.find((e) => e.type === "text" && e.delta.includes("503"));
+  assert.ok(errText, "expected error text mentioning 503");
+});
+
+test("retry: non-retryable 400 fails fast (no retries)", async () => {
+  let attempt = 0;
+  const fetchMock: typeof fetch = async () => {
+    attempt++;
+    return new Response("bad request", { status: 400 });
+  };
+  const provider = createCloudflareProvider({
+    accountId: "x",
+    apiToken: "y",
+    fetchFn: fetchMock,
+    delayFn: async () => {
+      throw new Error("delayFn should never be called for 400");
+    },
+    retry: { maxRetries: 3 },
+  });
+  const events = await collect(provider, minimalInput());
+  assert.equal(attempt, 1, "must not retry on 400");
+  const stop = events.find((e) => e.type === "stop");
+  assert.equal(stop?.type === "stop" && stop.reason, "error");
+});
+
+test("retry: aborted signal during backoff exits the loop without further attempts", async () => {
+  let attempt = 0;
+  const fetchMock: typeof fetch = async () => {
+    attempt++;
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "30" },
+    });
+  };
+  const ac = new AbortController();
+  const provider = createCloudflareProvider({
+    accountId: "x",
+    apiToken: "y",
+    fetchFn: fetchMock,
+    // delayFn that aborts mid-wait when the signal fires.
+    delayFn: async (_ms, signal) => {
+      // Simulate user pressing Ctrl+C immediately.
+      ac.abort();
+      if (signal?.aborted) throw new Error("aborted");
+    },
+    retry: { maxRetries: 5 },
+  });
+  const events: TurnEvent[] = [];
+  for await (const e of provider.turn(minimalInput(), ac.signal)) events.push(e);
+  // First fetch attempt happened, then backoff aborted.
+  assert.equal(attempt, 1);
+  const stop = events.find((e) => e.type === "stop");
+  assert.equal(stop?.type === "stop" && stop.reason, "error");
+});
+
+test("retry: fetch network error retried like a 5xx", async () => {
+  let attempt = 0;
+  const fetchMock: typeof fetch = async () => {
+    attempt++;
+    if (attempt < 3) throw new Error("ECONNRESET");
+    return sseResponse(["data: [DONE]\n\n"]);
+  };
+  const provider = createCloudflareProvider({
+    accountId: "x",
+    apiToken: "y",
+    fetchFn: fetchMock,
+    delayFn: async () => {},
+    retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 1 },
+  });
+  const events = await collect(provider, minimalInput());
+  assert.equal(attempt, 3);
+  const stop = events.findLast((e) => e.type === "stop");
+  assert.equal(stop?.type === "stop" && stop.reason, "end_turn");
 });

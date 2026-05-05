@@ -46,7 +46,11 @@ export const DEFAULT_POLICY: Policy = {
     rootDir: join(homedir(), ".harness", "memory", "default"),
     recall: { topK: 5, charBudget: 6000 },
     persist: { autoPersistTurns: true, minMessageLength: 20 },
-    compaction: { enabled: false, windowSize: 50 },
+    compaction: {
+      enabled: false,
+      windowSize: 50,
+      summarize: { enabled: false, maxTokens: 1500 },
+    },
   },
   encryption: {
     enabled: false,
@@ -61,6 +65,21 @@ export const loadPolicy = async (path: string): Promise<Policy> => {
 
 const isObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Parse the optional compaction.summarize block. Default off. */
+const parseCompactionSummarize = (
+  raw: unknown,
+): { enabled: boolean; maxTokens: number } => {
+  const fallback = DEFAULT_POLICY.memory.compaction.summarize ?? { enabled: false, maxTokens: 1500 };
+  if (!isObject(raw)) return fallback;
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : fallback.enabled,
+    maxTokens:
+      typeof raw.maxTokens === "number" && raw.maxTokens > 0
+        ? raw.maxTokens
+        : fallback.maxTokens,
+  };
+};
 
 const mergeWithDefaults = (input: unknown): Policy => {
   if (!isObject(input)) {
@@ -181,6 +200,7 @@ const mergeWithDefaults = (input: unknown): Policy => {
         memCompactionIn.windowSize >= 1
           ? memCompactionIn.windowSize
           : DEFAULT_POLICY.memory.compaction.windowSize,
+      summarize: parseCompactionSummarize(memCompactionIn.summarize),
     },
   };
 

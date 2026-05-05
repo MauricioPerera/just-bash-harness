@@ -1,6 +1,6 @@
 {
   "name": "just-bash-harness",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "Single-agent harness on top of just-bash and the agent-skills ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers (Anthropic + Cloudflare Workers AI), cross-session memory, optional AES-256-GCM at rest.",
   "license": "MIT",
   "author": "Mauricio Perera",
@@ -55,8 +55,8 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli.ts",
-    "test": "node --test --import=tsx src/cli-args.test.ts src/approval.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/toolbox.test.ts src/memory.test.ts",
-    "test:list": "node --test --import=tsx --test-reporter=spec src/cli-args.test.ts src/approval.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/toolbox.test.ts src/memory.test.ts",
+    "test": "node --test --import=tsx src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/toolbox.test.ts src/memory.test.ts",
+    "test:list": "node --test --import=tsx --test-reporter=spec src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/toolbox.test.ts src/memory.test.ts",
     "smoke:slice": "tsx scratch/slice.ts",
     "smoke:e2e": "tsx scratch/e2e.ts",
     "smoke:cf-driven": "tsx scratch/e2e-cf-driven.ts",

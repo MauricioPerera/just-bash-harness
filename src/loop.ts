@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { deriveCategory, promptUserApproval } from "./approval.js";
+import { scrubToolResult } from "./redact.js";
 import type { Memory, MemoryRecord } from "./memory.js";
 import type {
   ApprovalGate,
@@ -65,6 +66,76 @@ const DEFAULT_SYSTEM_PROMPT =
   "You are an agent running in a sandboxed bash harness. Use the available skills via tool calls when they help. Keep responses focused.";
 
 const newTurnId = () => `t_${randomUUID().slice(0, 12)}` as Turn["id"];
+
+const SUMMARY_SYSTEM_PROMPT =
+  "You are summarizing a chunk of an agent conversation that is about to fall out of the active context window. " +
+  "Produce a structured digest covering: " +
+  "(1) the user's intent / what they're working on, " +
+  "(2) decisions made and tools called with their key outcomes, " +
+  "(3) any open threads or blockers. " +
+  "Be specific about file paths, identifiers, and concrete results. " +
+  "Avoid restating tool stdout verbatim — extract what mattered. " +
+  "The summary will be prepended to subsequent turns' system prompt as 'Earlier conversation digest'.";
+
+/**
+ * Render dropped turns as a single user message string for the summarizer.
+ * We don't pass tool_results back through the provider's history machinery
+ * — this is a one-shot summarization call with one synthetic user message.
+ */
+const formatDroppedTurnsForSummary = (turns: readonly Turn[]): string => {
+  const parts: string[] = [];
+  for (const t of turns) {
+    if (t.input.user) parts.push(`USER: ${t.input.user}`);
+    if (t.output.text) parts.push(`ASSISTANT: ${t.output.text}`);
+    if (t.output.toolCalls.length > 0) {
+      const calls = t.output.toolCalls
+        .map((c) => `- ${c.skillId.split("/").at(-1) ?? c.skillId}(${JSON.stringify(c.args).slice(0, 200)})`)
+        .join("\n");
+      parts.push(`TOOLS_CALLED:\n${calls}`);
+    }
+    if (t.input.toolResults && t.input.toolResults.length > 0) {
+      const results = t.input.toolResults
+        .map((r) => `- callId=${r.callId} ok=${r.result.ok} stdout=${r.result.stdout.slice(0, 300)}`)
+        .join("\n");
+      parts.push(`TOOL_RESULTS:\n${results}`);
+    }
+  }
+  return parts.join("\n\n");
+};
+
+/**
+ * Run one summarization pass through the same provider. Collects all text
+ * events into a single string. Tools / chains are not invoked — we set
+ * availableTools to []. The provider's stop reason is ignored; we trust
+ * the text up to the first stop event.
+ */
+export const runCompactionSummary = async (
+  provider: Provider,
+  droppedTurns: readonly Turn[],
+  maxTokens: number,
+  signal?: AbortSignal,
+): Promise<string> => {
+  const userBlock = formatDroppedTurnsForSummary(droppedTurns);
+  // Brief safeguard: cap input size so we don't blow the provider's
+  // own input limit. 50K chars is generous for most contexts; tools that
+  // need more should bump windowSize instead.
+  const cappedUser = userBlock.length > 50_000
+    ? userBlock.slice(0, 50_000) + "\n[... truncated for summary call ...]"
+    : userBlock;
+
+  const summaryInput: TurnInput = {
+    systemPrompt: SUMMARY_SYSTEM_PROMPT + ` Output budget: ~${maxTokens} tokens.`,
+    history: [],
+    user: cappedUser,
+    availableTools: [],
+  };
+  const collected: string[] = [];
+  for await (const evt of provider.turn(summaryInput, signal)) {
+    if (evt.type === "text") collected.push(evt.delta);
+    if (evt.type === "stop") break;
+  }
+  return collected.join("");
+};
 
 /**
  * Build a synthetic worst-case ResolvedSkill for a chain step whose target
@@ -157,6 +228,53 @@ export const runTurn = async (
       ? fullHistory.slice(-compactionCfg.windowSize)
       : fullHistory;
 
+  // When compaction trims history AND summarize.enabled, generate a
+  // rolling summary of the dropped turns and prepend it to the system
+  // prompt. The summary is built by asking the same provider for a
+  // structured digest of the dropped block. Cost: one extra provider
+  // call with maxTokens cap. See issue #1 for design rationale.
+  let compactionSummaryBlock = "";
+  const droppedTurns = fullHistory.slice(0, fullHistory.length - activeHistory.length);
+  const summarizeCfg = compactionCfg.summarize;
+  if (
+    summarizeCfg?.enabled &&
+    droppedTurns.length > 0 &&
+    deps.policy.memory.enabled
+  ) {
+    try {
+      opts.handlers?.onThinking?.(
+        `[compaction-summary: requesting digest of ${droppedTurns.length} dropped turn(s) (max ${summarizeCfg.maxTokens} tokens)]\n`,
+      );
+      const summary = await runCompactionSummary(
+        deps.provider,
+        droppedTurns,
+        summarizeCfg.maxTokens,
+        opts.signal,
+      );
+      if (summary.trim().length > 0) {
+        compactionSummaryBlock = `\n\n## Earlier conversation digest (compaction summary)\n${summary.trim()}`;
+        // Persist the summary to memory so it's recallable on later runs.
+        if (deps.memory) {
+          try {
+            await deps.memory.remember(summary, {
+              kind: "compaction-summary",
+              sessionId: String(opts.sessionId),
+              ts: new Date().toISOString(),
+            });
+          } catch (err) {
+            opts.handlers?.onThinking?.(
+              `[compaction-summary persist failed: ${(err as Error).message}]\n`,
+            );
+          }
+        }
+      }
+    } catch (err) {
+      opts.handlers?.onThinking?.(
+        `[compaction-summary failed: ${(err as Error).message}]\n`,
+      );
+    }
+  }
+
   if (activeHistory.length < fullHistory.length) {
     const dropped = fullHistory.length - activeHistory.length;
     opts.handlers?.onThinking?.(
@@ -187,9 +305,11 @@ export const runTurn = async (
 
     const baseSystem = opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     const input: TurnInput = {
-      // Append recalled memories to the system prompt. The block is empty
-      // when memory is disabled / no recall hit, so this is a no-op cost.
-      systemPrompt: baseSystem + memoryBlock,
+      // Order: base prompt, then compaction summary (digest of dropped
+      // turns — most recent context that the active window doesn't cover),
+      // then recalled memories (older / cross-session context). Both
+      // blocks are empty in the common case so this is a no-op cost.
+      systemPrompt: baseSystem + compactionSummaryBlock + memoryBlock,
       history: activeHistory,
       ...(pendingUser !== undefined ? { user: pendingUser } : {}),
       ...(pendingResults !== undefined ? { toolResults: pendingResults } : {}),
@@ -359,7 +479,18 @@ export const runTurn = async (
       }
 
       const result = await deps.toolbox.execute(resolved, action.args, opts.userMessage);
-      nextResults.push({ callId: call.id, result });
+      // Redact known secret patterns before the result reaches any
+      // persistence sink (db turns, memory) or the next provider call.
+      // Defense in depth — even if a skill prints a token, the audit
+      // record AND the LLM context see [REDACTED:<kind>:<len>] instead.
+      // Phase 1: conservative pattern set (see src/redact.ts).
+      const scrubbed = scrubToolResult(result);
+      if (scrubbed.redacted > 0) {
+        opts.handlers?.onThinking?.(
+          `[redact: ${scrubbed.redacted} secret(s) scrubbed from ${resolved.shortId} output]\n`,
+        );
+      }
+      nextResults.push({ callId: call.id, result: scrubbed });
     }
 
     toolResultsBuffer.push(...nextResults);

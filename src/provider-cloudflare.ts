@@ -38,7 +38,86 @@ export interface CloudflareProviderOpts {
   baseUrl?: string;
   /** Inject fetch (testing). */
   fetchFn?: typeof fetch;
+  /** Inject delay implementation (testing — bypass real setTimeout). */
+  delayFn?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Retry policy for the INITIAL fetch only. We never retry once the SSE
+   * stream has started yielding events — that would corrupt the
+   * conversation state. The Anthropic SDK does this automatically; the
+   * Cloudflare provider used to do nothing, leaving 429s as fatal errors.
+   */
+  retry?: RetryPolicy;
 }
+
+export interface RetryPolicy {
+  /** Maximum number of retries after the initial attempt. Default: 3. */
+  maxRetries?: number;
+  /** Base delay before retry #1, in milliseconds. Default: 500. */
+  baseDelayMs?: number;
+  /** Cap on exponential backoff. Default: 10_000 (10s). */
+  maxDelayMs?: number;
+  /** Status codes that should trigger a retry. Default: [429, 502, 503, 504]. */
+  retryableStatuses?: readonly number[];
+}
+
+const DEFAULT_RETRY: Required<RetryPolicy> = {
+  maxRetries: 3,
+  baseDelayMs: 500,
+  maxDelayMs: 10_000,
+  retryableStatuses: [429, 502, 503, 504],
+};
+
+/** Parse a `Retry-After` header. Accepts seconds (integer) or HTTP date.
+ *  Returns null if missing or unparseable. The caller decides whether to
+ *  honor it vs use the computed backoff (we honor it when present). */
+export const parseRetryAfter = (
+  value: string | null,
+  now: number = Date.now(),
+): number | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  // Integer seconds form.
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) && seconds >= 0 ? Math.round(seconds * 1000) : null;
+  }
+  // HTTP date form.
+  const ts = Date.parse(trimmed);
+  if (Number.isNaN(ts)) return null;
+  return Math.max(0, ts - now);
+};
+
+/** Compute exponential-with-full-jitter backoff for retry attempt N (1-indexed).
+ *  randomSrc is parameterized so tests can pin the result. */
+export const computeBackoffMs = (
+  attempt: number,
+  policy: Required<RetryPolicy>,
+  randomSrc: () => number = Math.random,
+): number => {
+  // Exponential: base * 2^(attempt-1). Cap at maxDelayMs. Then full jitter
+  // (uniform 0..computed). Avoids thundering herd in concurrent CI use.
+  const exp = policy.baseDelayMs * Math.pow(2, attempt - 1);
+  const cap = Math.min(exp, policy.maxDelayMs);
+  return Math.floor(randomSrc() * cap);
+};
+
+const defaultDelay = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new Error("aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 
 // ─── shape adapters ─────────────────────────────────────────────────────────
 
@@ -298,6 +377,7 @@ const processHermesBuffer = (buffer: string): BufferProcessOutput => {
 // Exported for unit tests.
 export const __test_processHermesBuffer = processHermesBuffer;
 export const __test_parseHermesPayload = parseHermesPayload;
+export const __test_DEFAULT_RETRY = DEFAULT_RETRY;
 
 // ─── public factory ─────────────────────────────────────────────────────────
 
@@ -310,6 +390,11 @@ export const createCloudflareProvider = (
   const model = opts.model ?? DEFAULT_MODEL;
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
   const fetchImpl = opts.fetchFn ?? globalThis.fetch;
+  const delayImpl = opts.delayFn ?? defaultDelay;
+  const retryCfg: Required<RetryPolicy> = {
+    ...DEFAULT_RETRY,
+    ...(opts.retry ?? {}),
+  };
 
   return {
     async *turn(input: TurnInput, signal?: AbortSignal): AsyncIterable<TurnEvent> {
@@ -329,42 +414,97 @@ export const createCloudflareProvider = (
       if (tools.length > 0) body["tools"] = tools;
       if (opts.temperature !== undefined) body["temperature"] = opts.temperature;
 
-      let response: Response;
-      try {
-        response = await fetchImpl(url, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${opts.apiToken}`,
-            "Content-Type": "application/json",
-            Accept: "text/event-stream",
-          },
-          body: JSON.stringify(body),
-          // Propagate abort so Ctrl+C in the harness actually closes the
-          // upstream HTTP request instead of letting it drain. Browsers
-          // and Node 22 both honor this through to the underlying socket.
-          ...(signal !== undefined ? { signal } : {}),
-        });
-      } catch (err) {
-        yield { type: "stop", reason: "error" };
-        yield {
-          type: "text",
-          delta: `\ncloudflare fetch failed: ${(err as Error).message}`,
-        };
-        return;
+      // Retry the INITIAL fetch (before the stream opens) on transient
+      // failures. Once the SSE stream has yielded any event, we never
+      // retry — the conversation state is in flight at that point.
+      let response: Response | null = null;
+      let lastErr: Error | null = null;
+      let lastStatus: number | null = null;
+      let lastBody = "";
+      const fetchInit: RequestInit = {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${opts.apiToken}`,
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify(body),
+        ...(signal !== undefined ? { signal } : {}),
+      };
+
+      const retryableStatusSet = new Set(retryCfg.retryableStatuses);
+      // attempt 0 = initial; attempt 1..maxRetries = retries.
+      for (let attempt = 0; attempt <= retryCfg.maxRetries; attempt++) {
+        if (signal?.aborted) {
+          response = null;
+          lastErr = new Error("aborted");
+          break;
+        }
+        try {
+          const resp = await fetchImpl(url, fetchInit);
+          if (resp.ok && resp.body) {
+            response = resp;
+            break;
+          }
+          // Non-2xx — decide retry vs surface.
+          lastStatus = resp.status;
+          lastBody = await resp.text().catch(() => "");
+          if (!retryableStatusSet.has(resp.status) || attempt >= retryCfg.maxRetries) {
+            response = null;
+            break;
+          }
+          // Honor Retry-After when present; else exponential + jitter.
+          const ra = parseRetryAfter(resp.headers.get("retry-after"));
+          const computed = computeBackoffMs(attempt + 1, retryCfg);
+          const delayMs = ra !== null ? Math.min(ra, retryCfg.maxDelayMs) : computed;
+          yield {
+            type: "thinking",
+            delta: `[cloudflare retry: status=${resp.status} attempt=${attempt + 1}/${retryCfg.maxRetries} delay=${delayMs}ms]\n`,
+          };
+          try {
+            await delayImpl(delayMs, signal);
+          } catch {
+            response = null;
+            lastErr = new Error("aborted during retry backoff");
+            break;
+          }
+        } catch (err) {
+          lastErr = err as Error;
+          if (signal?.aborted) break;
+          if (attempt >= retryCfg.maxRetries) break;
+          const computed = computeBackoffMs(attempt + 1, retryCfg);
+          yield {
+            type: "thinking",
+            delta: `[cloudflare retry: fetch error="${lastErr.message}" attempt=${attempt + 1}/${retryCfg.maxRetries} delay=${computed}ms]\n`,
+          };
+          try {
+            await delayImpl(computed, signal);
+          } catch {
+            lastErr = new Error("aborted during retry backoff");
+            break;
+          }
+        }
       }
 
-      if (!response.ok || !response.body) {
-        const text = await response.text().catch(() => "");
+      if (!response) {
         yield { type: "stop", reason: "error" };
-        yield {
-          type: "text",
-          delta: `\ncloudflare ${response.status}: ${text.slice(0, 500)}`,
-        };
+        const summary = lastErr
+          ? `cloudflare fetch failed: ${lastErr.message}`
+          : `cloudflare ${lastStatus}: ${lastBody.slice(0, 500)}`;
+        yield { type: "text", delta: `\n${summary}` };
         return;
       }
 
       // Parse SSE: lines `data: <json>\n`, terminated by `data: [DONE]`.
-      const reader = response.body.getReader();
+      // We only assigned `response` when `resp.ok && resp.body`, so the
+      // body is non-null here — TS just can't see across the loop.
+      const responseBody = response.body;
+      if (responseBody === null) {
+        yield { type: "stop", reason: "error" };
+        yield { type: "text", delta: "\ncloudflare: response body unexpectedly null" };
+        return;
+      }
+      const reader = responseBody.getReader();
       const decoder = new TextDecoder();
       let buf = "";
       const partialArgs = new Map<number, string>();

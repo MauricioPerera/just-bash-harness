@@ -2,6 +2,77 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.3.0] — 2026-05-05
+
+### All five tracked design issues land — minor bump because two of them change behavior
+
+Closes the five issues filed after the v0.2.6 retrospective. Three are purely additive; two (redaction, summary) change what flows to provider/storage and warrant a minor-version bump.
+
+#### Issue #5 — Cloudflare provider: rate-limit + backoff parity with the Anthropic SDK
+
+The Anthropic SDK does exponential-backoff-with-jitter on 429/5xx automatically; the Cloudflare provider hand-rolled fetch and did nothing. A single 429 propagated as a fatal error and burned the loop's wallclock budget on zero-cost failures.
+
+- New `RetryPolicy` shape on `CloudflareProviderOpts`: `maxRetries=3`, `baseDelayMs=500`, `maxDelayMs=10_000`, `retryableStatuses=[429,502,503,504]`.
+- Retries the **initial fetch only** — never mid-stream (would corrupt conversation state).
+- Honors `Retry-After` (integer seconds OR HTTP date) when present; otherwise full-jitter exponential backoff.
+- AbortSignal threads through retry sleep — Ctrl+C exits cleanly.
+- Network errors retried like 5xx.
+- `thinking` event per retry attempt with status / attempt / delay so operators can observe.
+- Pure helpers exported and tested: `parseRetryAfter`, `computeBackoffMs`.
+
+#### Issue #3 — Approval-fatigue metrics + `--suggest-overrides`
+
+DESIGN §9 v0 acknowledged this as an open risk: "Override map es la palanca; deberíamos trackear prompt-rate por skill en audit". Now done.
+
+- New `src/approval-stats.ts`. Per-skill counters (`ask_count`, `allow_count`, `deny_count`, `last_ts`, `last_decision`) persisted in the **bank-level** `db approval_stats` collection (not per-session). Cross-session aggregation is the whole point.
+- The approval gate's audit callback now best-effort-increments these counters. Failures swallowed (never break the approval flow); diagnostics surfaced via stderr.
+- New CLI: `harness audit --suggest-overrides [--min-asks N] [--min-ratio R]`. Lists skills with high (askedUser → allow) ratios and zero historical denies; renders a paste-ready `policy.skills.overrides` YAML block.
+- Single deny disqualifies a skill from suggestion (the user's signal that this one isn't blanket-safe).
+
+#### Issue #2 Phase 1 — Secret redaction in tool stdout
+
+The `redacted` field on `ToolResult` was removed in `0.2.4` because nothing ever set it to true — there was no scrubbing. The trust model in DESIGN §2 marks tool stdout as untrusted *for instruction following* but didn't address it as untrusted *for data exfiltration into long-lived stores*.
+
+- New `src/redact.ts` with conservative default patterns: AWS access key (`AKIA...`), GitHub tokens (`ghp_/gho_/ghs_/ghu_/github_pat_`), Slack tokens (`xox*-`), JWT triplet shape, PEM private-key blocks. Tuned for low false-positive rate over typical skill output (UUIDs, env-style assignments NOT clipped — those are Phase 2 candidates with policy config).
+- `scrubSecrets(text, patterns?)` returns `{ scrubbed, matched, byKind }`; each match becomes `[REDACTED:<kind>:<len>]`. Length surfaced so operators can tell apart a 40-char token from a long PEM.
+- `scrubToolResult(result)` returns a NEW object with stdout/stderr scrubbed and a `redacted: number` field added (without modifying the public `ToolResult` contract).
+- Wired into `loop.ts` at the only place real `ToolResult`s are constructed. Persistence, provider feedback, and memory all see redacted content. A `[redact: N secret(s) scrubbed from <skill>]` line goes to `onThinking` when matches occur.
+- **Phase 2 deferred**: policy-driven config (`policy.redaction.patterns`), per-skill opt-out, generic high-entropy + env-style patterns. Tracked for future work.
+
+#### Issue #4 — `harness rekey` subcommand for encryption key rotation
+
+Encryption was a one-way decision since `0.1.8`: changing `HARNESS_ENCRYPTION_KEY` made existing data unreadable. For long-lived sessions and memory banks, that meant key rotation was effectively impossible. Now there is an explicit migration path.
+
+- New subcommand: `harness rekey --from-env <var> --to-env <var> [--target sessions|memory|all] [--dry-run]`.
+- Strategy per bank dir: export-with-old → init staging dir with new key → import → atomic rename. Original moves to `<dir>.rekey-backup-<ts>` (kept for verification, deletion is the user's job).
+- `--dry-run` runs export-only — proves the OLD key correctly decrypts every collection without touching original storage.
+- Refuses to run if any target dir was modified <60s ago (best-effort detection of a concurrent harness process).
+- Stops on first error so partially-rekeyed dirs are never produced.
+- Limitations documented in the module header: hardcoded collection list (sessions/turns/approvals + sources), sub-second mv→mv window not strictly atomic. Integration tested manually for v0.3.0.
+
+#### Issue #1 — Compaction with rolling LLM-generated summary
+
+Today's compaction (`0.1.7`) is a hard slice + memory recall fallback. That works for sessions where dropped turns have substantive textual content but loses the working set on tool-call-dense histories (where the actual data the LLM saw — tool stdout, command outputs — is gone).
+
+- New `policy.memory.compaction.summarize: { enabled, maxTokens }` config (default disabled, 1500 tokens).
+- When compaction triggers AND `summarize.enabled: true`: the harness asks the active provider for a structured digest of the dropped turns ("USER intent / decisions made and tools called with key outcomes / open threads"), prepends it to subsequent system prompts, and persists it to memory as a `compaction-summary` kind record.
+- Cost transparency: each compaction event emits a `thinking` event before and after the summary call; persistence failures are non-fatal.
+- Strict additive: when `summarize.enabled: false` the existing slice + memory recall path from v0.1.7 is preserved exactly.
+- 50K-char input cap on the summary call (with a `[... truncated for summary call ...]` marker) so a runaway dropped block doesn't blow the provider's input limit.
+
+### Tests
+
+- 152 → **195 unit tests** (+43):
+  - 13 new in `provider-cloudflare.test.ts` (retry helpers + integration)
+  - 8 new in `approval-stats.test.ts`
+  - 15 new in `redact.test.ts`
+  - 7 new in `loop.test.ts` (`runCompactionSummary` shape + truncation + stop semantics)
+- Typecheck clean.
+- Rekey is integration-tested manually for this release; unit coverage TBD with a stubbed `bashFactory`.
+
+### Larger items now closed
+After this release the issue tracker has zero open enhancements. Future work queues up against `LESSONS.md` doctrines #1 and #2 — every new feature must enumerate the invariants it touches.
+
 ## [0.2.7] — 2026-05-05
 
 ### External-review follow-up: low-cost DX + hygiene fixes

@@ -27,6 +27,13 @@ import {
 import { createToolbox } from "./toolbox.js";
 import { createSessionStore } from "./session.js";
 import { createApprovalGate, promptUserApproval } from "./approval.js";
+import {
+  createApprovalStatsStore,
+  suggestOverrides,
+  renderSuggestionsYaml,
+  type ApprovalStatsStore,
+} from "./approval-stats.js";
+import { runRekey, type RekeyTarget } from "./rekey.js";
 import { resolveProviderFromEnv } from "./provider.js";
 import { loadPolicy, DEFAULT_POLICY } from "./policy.js";
 import { runTurn } from "./loop.js";
@@ -49,6 +56,7 @@ Usage:
   harness resume <sessionId>
   harness sessions
   harness audit <sessionId> [--limit N]
+  harness audit --suggest-overrides [--min-asks N] [--min-ratio R]
   harness skills list [--all]
   harness skills add <pack@version>
   harness search <query> [--topK N] [--budget N] [--kind <k>] [--session <id>]
@@ -59,6 +67,7 @@ Usage:
   harness memory stats
   harness memory export <path>
   harness bench --truth <path> [--threshold N] [--rerank <mode>] [--k N]
+  harness rekey --from-env <var> --to-env <var> [--target sessions|memory|all] [--dry-run]
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -165,6 +174,30 @@ const ensureSessionsRoot = async (policy: Policy): Promise<string> => {
   const dir = policy.paths.sessionsRoot;
   await mkdir(dir, { recursive: true });
   return dir;
+};
+
+/** Construct the bank-level approval stats store. Same encryption settings
+ *  as session storage. The skills bank dir already exists by the time this
+ *  is called (ensureBank() ran first), so no mkdir needed here. */
+const buildApprovalStatsStore = (policy: Policy): ApprovalStatsStore => {
+  const bankRoot = policy.paths.skillsBankDir ?? defaultBankRoot();
+  const enc = policy.encryption.enabled
+    ? {
+        encryptionKey: process.env["HARNESS_ENCRYPTION_KEY"] ?? "",
+        ...(policy.encryption.saltSession !== undefined
+          ? { encryptionSalt: policy.encryption.saltSession }
+          : {}),
+      }
+    : {};
+  return createApprovalStatsStore({
+    bankRoot,
+    ...enc,
+    onError: (err) => {
+      // Non-fatal; surface to stderr so the operator knows but the
+      // approval flow continues.
+      process.stderr.write(`  (approval-stats: ${err.message})\n`);
+    },
+  });
 };
 
 /** Construct a SessionStore from policy, forwarding encryption when enabled.
@@ -316,9 +349,15 @@ const cmdChat = async (args: Args): Promise<number> => {
   await ensureSessionsRoot(policy);
   const sessionStore = buildSessionStore(policy);
   const toolbox = createToolbox({ bank, embedder });
+  const approvalStats = buildApprovalStatsStore(policy);
   const approval = createApprovalGate({
     policy,
-    audit: async () => undefined,
+    // Best-effort: increment the bank-level stats. Failures swallowed
+    // (logged via the store's onError) — never break the approval flow.
+    audit: async (record) => {
+      const askedUser = record.source === "user";
+      await approvalStats.record(record.action.skillId, record.decision, askedUser);
+    },
   });
   const memory = await buildMemoryIfEnabled(policy, embedder);
 
@@ -664,6 +703,37 @@ const cmdResume = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const cmdAuditSuggestOverrides = async (args: Args): Promise<number> => {
+  const minAsksFlag = args.flags.get("min-asks");
+  const minAsks = typeof minAsksFlag === "string"
+    ? Math.max(1, parseInt(minAsksFlag, 10) || 5)
+    : 5;
+  const minRatioFlag = args.flags.get("min-ratio");
+  const minAllowRatio = typeof minRatioFlag === "string"
+    ? Math.max(0, Math.min(1, parseFloat(minRatioFlag) || 0.95))
+    : 0.95;
+
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+  // Ensure the bank exists (creating an empty stats coll on first run is fine).
+  const embedder = resolveEmbedderOrStub();
+  await ensureBank(policy, embedder);
+  const stats = buildApprovalStatsStore(policy);
+  const all = await stats.list();
+
+  process.stdout.write(`# approval stats: ${all.length} skill(s) tracked\n`);
+  process.stdout.write(`# threshold: min-asks=${minAsks} min-allow-ratio=${minAllowRatio}\n\n`);
+
+  const suggestions = suggestOverrides(all, { minAsks, minAllowRatio });
+  process.stdout.write(renderSuggestionsYaml(suggestions));
+  if (suggestions.length > 0) {
+    process.stderr.write(
+      `\n# ${suggestions.length} suggestion(s). Paste the block above into your policy YAML.\n`,
+    );
+  }
+  return 0;
+};
+
 const cmdSessions = async (args: Args): Promise<number> => {
   const policyPath = resolvePolicyPath(args.flags);
   const policy = await loadPolicyOrDefault(policyPath);
@@ -695,9 +765,14 @@ const cmdSessions = async (args: Args): Promise<number> => {
 };
 
 const cmdAudit = async (args: Args): Promise<number> => {
+  // --suggest-overrides operates on bank-level stats, not on a session.
+  if (args.flags.get("suggest-overrides") === true) {
+    return cmdAuditSuggestOverrides(args);
+  }
+
   const sessionId = args.positional[0] as SessionId | undefined;
   if (!sessionId) {
-    process.stderr.write("harness audit: <sessionId> required\n");
+    process.stderr.write("harness audit: <sessionId> required (or pass --suggest-overrides for bank-wide analysis)\n");
     return 64;
   }
 
@@ -1065,6 +1140,67 @@ const cmdMemoryRemember = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const cmdRekey = async (args: Args): Promise<number> => {
+  const targetFlag = (args.flags.get("target") as string | true | undefined);
+  const target: RekeyTarget =
+    targetFlag === "sessions" || targetFlag === "memory" || targetFlag === "all"
+      ? targetFlag
+      : "all";
+
+  const fromEnvFlag = args.flags.get("from-env");
+  const toEnvFlag = args.flags.get("to-env");
+  if (typeof fromEnvFlag !== "string" || typeof toEnvFlag !== "string") {
+    process.stderr.write(
+      "harness rekey: --from-env <var> and --to-env <var> are required\n" +
+        "(passing keys on argv would expose them via `ps`; use env vars instead)\n",
+    );
+    return 64;
+  }
+  const oldKey = process.env[fromEnvFlag];
+  const newKey = process.env[toEnvFlag];
+  if (!oldKey || !newKey) {
+    process.stderr.write(
+      `harness rekey: ${fromEnvFlag}/${toEnvFlag} env vars must be set with non-empty values\n`,
+    );
+    return 64;
+  }
+  if (oldKey === newKey) {
+    process.stderr.write(`harness rekey: old and new keys are identical — refusing\n`);
+    return 64;
+  }
+
+  const dryRun = args.flags.get("dry-run") === true;
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+
+  const result = await runRekey({
+    sessionsRoot: policy.paths.sessionsRoot,
+    ...(policy.memory.enabled ? { memoryRoot: policy.memory.rootDir } : {}),
+    target,
+    oldKey,
+    newKey,
+    ...(policy.encryption.saltSession !== undefined ? { saltSession: policy.encryption.saltSession } : {}),
+    ...(policy.encryption.saltMemory !== undefined ? { saltMemory: policy.encryption.saltMemory } : {}),
+    dryRun,
+    log: (line) => process.stdout.write(line + "\n"),
+  });
+
+  if (result.errors.length > 0) {
+    process.stderr.write("\nerrors:\n");
+    for (const e of result.errors) {
+      process.stderr.write(`  ${e.dir}: ${e.message}\n`);
+    }
+  }
+  process.stdout.write(
+    `\nresult: processed=${result.bankDirsProcessed} backups=${result.backupDirs.length} ok=${result.ok}\n`,
+  );
+  if (result.backupDirs.length > 0 && !dryRun) {
+    process.stdout.write(`backup dir(s) (delete after verification):\n`);
+    for (const b of result.backupDirs) process.stdout.write(`  ${b}\n`);
+  }
+  return result.ok ? 0 : 1;
+};
+
 // ─── dispatcher ─────────────────────────────────────────────────────────────
 
 const main = async (argv: readonly string[]): Promise<number> => {
@@ -1123,6 +1259,8 @@ const main = async (argv: readonly string[]): Promise<number> => {
           );
           return 64;
       }
+    case "rekey":
+      return withCommandError("rekey", () => cmdRekey(args));
     case "skills":
       switch (args.positional[0]) {
         case "list":

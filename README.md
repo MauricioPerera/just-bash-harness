@@ -2,7 +2,7 @@
 
 Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-bash) and the [`agent-skills`](https://github.com/MauricioPerera/agent-skills) ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers.
 
-**Version:** 0.2.7 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction + AES-256-GCM at rest + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + **Hermes-style `<tool_call>` parser** (works with Hermes 2 Pro alongside Granite/Gemma/Llama) + AbortSignal propagation + per-tool-call rationale tracking + Hermes parser diagnostics. 142/142 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry.
+**Version:** 0.3.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction (with optional rolling LLM summary) + AES-256-GCM at rest (with `harness rekey` rotation) + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + Hermes parser w/ diagnostics + AbortSignal propagation + per-tool-call rationale + secret redaction at persistence boundaries + approval-fatigue metrics + Cloudflare provider rate-limit + backoff. 195/195 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry.
 
 ## Intended audience
 
