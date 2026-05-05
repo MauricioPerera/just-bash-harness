@@ -1,7 +1,7 @@
 // Session persistence over a dedicated `createBankBash` instance.
 // Validated by scratch/slice.ts: insert/find/export round-trip works.
 
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, stat, writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -89,12 +89,30 @@ export const createSessionStore = (opts: SessionStoreOpts): SessionStore => {
     },
 
     async load(id: SessionId): Promise<Session> {
+      // Check the dir exists before constructing a Bash — otherwise just-bash
+      // creates the dir lazily and pollutes the sessions root with empty
+      // bank dirs for typo'd ids.
+      const dir = sessionDir(opts.sessionsRoot, id);
+      try {
+        await stat(dir);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          throw new Error(`session not found: ${id}`);
+        }
+        throw err;
+      }
+
       const bash = bashFor(id);
       const sessRes = await bash.exec(`db ${SESSIONS_COLL} find '${escSingle(JSON.stringify({ _id: id }))}'`);
+      // exit 3 = SESSIONS_COLL is missing. The dir exists (we just stat'd it)
+      // but the session doc was never inserted — treat as not-found.
+      if (sessRes.exitCode === 3) {
+        throw new Error(`session not found: ${id}`);
+      }
       expectOk(sessRes, "session.load(session)");
       const sessParsed = JSON.parse(sessRes.stdout) as Array<Session & { _id: string }>;
       if (sessParsed.length === 0) {
-        throw new Error(`session.load: not found: ${id}`);
+        throw new Error(`session not found: ${id}`);
       }
       const sess = sessParsed[0]!;
 

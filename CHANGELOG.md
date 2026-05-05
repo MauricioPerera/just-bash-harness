@@ -2,6 +2,23 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.3] — 2026-05-04
+
+### CLI polish
+- **`harness version` / `--version` / `-v`** — prints the harness version (hardcoded in lockstep with `package.json`).
+- **`harness sessions`** — lists session dirs newest-first by mtime, with a count line on stderr. Empty case prints a friendly message pointing at the sessions root.
+- **`harness audit <sessionId> [--limit N]`** — prints session metadata, then approvals from the session's `db approvals` (last N, newest-style ordering), then the bank's recent skill executions (`bank.listAudit`). Skill ids shortened to last path segment for legibility; intent (if recorded by `runExec`) shown clipped to 60 chars.
+- **SIGINT handling in `harness chat`** — first Ctrl+C aborts the loop's `AbortSignal` (loop will stop at the next provider event boundary, save what it collected, and return exit 130). Second Ctrl+C hard-exits.
+- **Per-subcommand error wrapping** — each subcommand now goes through `withCommandError(name, fn)`. Errors print as `harness <cmd>: <message>` instead of generic `fatal:` traces. Specific case: `loadPolicyOrDefault` translates `ENOENT` to `policy file not found: <path>`.
+- **Cleaner "session not found" error** — `session.load(id)` now distinguishes "missing" from "exec error" and throws `session not found: <id>` instead of leaking the bash exit code.
+- **Bug fix: dir pollution from typo'd session ids** — `session.load(id)` now `stat`s the per-session dir before constructing a `createBankBash` instance. Without this, `harness audit s_typo` would create an empty bank dir under the sessions root because just-bash's FS creates dirs lazily on first access.
+- **HELP rewrite** — added Examples section showing common flows (bootstrap, subscribe pack, force provider, list/resume sessions). Subcommand list reorganized.
+
+### Smokes verified
+- All 8 subcommands work against a fresh `~/.harness/sessions/`.
+- Bad inputs (`audit nonexistent`, `--policy /tmp/no-such.yaml`, `garbage` subcommand) produce clean, contextualized errors.
+- 100/100 unit tests still pass; slice, e2e, cf-driven all green.
+
 ## [0.1.2] — 2026-05-04
 
 ### Tests
