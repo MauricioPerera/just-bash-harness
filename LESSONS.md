@@ -212,6 +212,97 @@ resolves outside the source tree. tsup inlines the value at build time.
   exist in provider files. If they ever exist in two places, they will drift.
 - Fact tables in CHANGELOG, README, DESIGN can drift; the LOC claim that
   stayed at `~1700` for many releases is the same anti-pattern in docs.
+- **The `--target` choice list for `harness rekey` lived in three places
+  (`RekeyTarget` type, HELP text, CHANGELOG bullet) when the `skills`
+  target was added in `de3da02`; only the type and HELP got updated.
+  The CHANGELOG bullet went stale until the post-publish audit caught
+  it.** Operational corollary: when extending an enum-shaped fact
+  (choice list, status set, command verbs), grep the codebase + docs
+  for occurrences of every existing value before committing. If the
+  count > 2, refactor to a single source.
+
+---
+
+## 5. A doctrine applies the moment it is authored
+
+**Origin: v0.3.0 — doctrine #2 (above) was written in commit `713d2c8`
+roughly an hour before v0.3.0 shipped, and was NOT applied to v0.3.0's
+own changelog. Applied retroactively in `de3da02` along with a written
+acknowledgement of why retroactive application matters.**
+
+The v0.3.0 release closed five tracked issues in a consolidated commit.
+Each of those features touched at least one existing safety invariant
+(persistence boundaries, trust model, encryption, approval gate,
+provider input channel). Doctrine #2 says: enumerate those invariants
+in the changelog and reverify each. The doctrine had been authored
+exactly one commit prior. It was not applied.
+
+The defensive reading was: "the doctrine is for future work; v0.3.0
+was closing pre-tracked issues." That reading is **the comfortable
+exit that makes operational doctrines aspirational**. If a doctrine
+authored at time T applies starting at T+1 release, then any author
+of a doctrine can implicitly grant themselves a one-release exemption
+on the very thing they're codifying. The doctrine becomes a thing
+that someone else must follow first.
+
+The retroactive application in `de3da02` set the opposite precedent:
+the moment a doctrine exists in the repo, it applies. The five
+features of v0.3.0 each got an "Invariants touched" subsection added
+post-publish, with the explicit framing that "this section is added
+retroactively, as a precedent: the doctrine applies the moment it
+exists."
+
+### Doctrine
+
+> **A doctrine added to LESSONS.md applies to the current release in
+> flight, not just to future releases. If a feature already shipped
+> within the same release window violated the new doctrine, retrofit
+> the changelog or release notes with the analysis the doctrine
+> demands. The cost of one retroactive application is small; the
+> cost of letting the first violation pass uncontested is that every
+> subsequent violation has a defensible precedent.**
+
+### Why this matters specifically for LESSONS.md
+
+This file is unusual in the repo: it's authored *because* of bugs,
+not as planning artifact. Every entry was a hindsight. That means
+the natural tempo is "ship → review → write doctrine → next release
+applies it." That tempo allows exactly one violation per doctrine
+before enforcement, and that violation is the same release that
+prompted the doctrine. Without doctrine #5, every new entry here
+gets a free first violation.
+
+The corollary: when you author a new doctrine, immediately scan the
+in-flight or just-shipped release for cases that the doctrine would
+have caught. If any exist, file them as retroactive notes — either
+in the changelog (as v0.3.0 did) or as a separate post-publish
+commit (as this one does for itself).
+
+### Where this will reappear
+
+- **The next time a doctrine is added.** This is the explicit case.
+- **Soft "guideline" language that can be reinterpreted as
+  aspirational.** If a doctrine reads "should consider X" rather
+  than "must enumerate X", the comfortable exit is wider. The
+  blockquoted doctrine sentence in each entry should be a directive,
+  not a recommendation.
+- **Cross-repo doctrines that depend on upstream packages.** If a
+  similar doctrine ever lands in `agent-skills-cli` or `just-bash-data`,
+  the same logic applies — the moment it exists upstream, downstream
+  consumers should sweep their in-flight code for violations rather
+  than wait.
+
+### Note on this entry's own scope
+
+This doctrine is itself a meta-application. It was authored after
+the post-0.3.0 audit cycle (`v0.3.0` → `35a1862` → `de3da02` →
+`84c5f38`) demonstrated the pattern in practice: doctrine #2 was
+written at 13:46, violated at 14:38 (v0.3.0), retroactively applied
+at 14:52 (de3da02), and audited again at 15:27 (84c5f38). The
+trajectory across those four commits — write → violate → retro →
+audit — is the case study. Adding doctrine #5 after-the-fact is
+itself an instance of doctrine #5 applying to itself: the lesson
+exists, so it gets codified now, not at "the next release."
 
 ---
 
