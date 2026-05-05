@@ -270,20 +270,19 @@ const processHermesBuffer = (buffer: string): BufferProcessOutput => {
 
   // No more open tags. Check if `remaining` ends with a possible partial
   // tag prefix (e.g. "<", "<tool_cal"). If so, hold that suffix back.
+  // Only suffixes starting with "<" can be partial-tag candidates (TAG_OPEN
+  // starts with "<"), so the redundant `suffix === TAG_OPEN.slice(0, i) &&
+  // suffix.startsWith("<")` check from earlier versions is folded into the
+  // single TAG_OPEN.startsWith(suffix) test below.
   for (let i = 1; i <= TAG_OPEN.length; i++) {
     const suffix = remaining.slice(-i);
-    if (TAG_OPEN.startsWith(suffix)) {
-      // The whole remaining tail might still be a tag start in progress.
-      // Only hold it back if it ACTUALLY starts a partial tag — i.e. the
-      // last `i` chars equal the first `i` of the tag and i > 0.
-      if (suffix === TAG_OPEN.slice(0, i) && suffix.startsWith("<")) {
-        textParts.push(remaining.slice(0, remaining.length - i));
-        return {
-          textToEmit: textParts.join(""),
-          toolCalls,
-          remaining: suffix,
-        };
-      }
+    if (suffix.length === i && TAG_OPEN.startsWith(suffix)) {
+      textParts.push(remaining.slice(0, remaining.length - i));
+      return {
+        textToEmit: textParts.join(""),
+        toolCalls,
+        remaining: suffix,
+      };
     }
   }
 

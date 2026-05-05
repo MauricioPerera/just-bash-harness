@@ -180,7 +180,6 @@ export const createToolbox = (opts: ToolboxOpts): Toolbox => {
         exitCode: parentResult.exit_code,
         elapsedMs: parentResult.elapsed_ms,
         timedOut: parentResult.timed_out,
-        redacted: false,
       };
 
       // No chain or parent failed → return parent result alone.
@@ -286,7 +285,6 @@ export const createToolbox = (opts: ToolboxOpts): Toolbox => {
         exitCode: worstExit,
         elapsedMs: elapsedMsTotal,
         timedOut,
-        redacted: false,
       };
     },
 

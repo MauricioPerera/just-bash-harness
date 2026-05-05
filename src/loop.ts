@@ -230,7 +230,6 @@ export const runTurn = async (
             exitCode: 127,
             elapsedMs: 0,
             timedOut: false,
-            redacted: false,
           },
         });
         continue;
@@ -309,7 +308,6 @@ export const runTurn = async (
             exitCode: 126,
             elapsedMs: 0,
             timedOut: false,
-            redacted: false,
           },
         });
         continue;

@@ -2,6 +2,24 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.4] — 2026-05-05
+
+### Cleanups from external review
+
+Four small fixes addressed together. None changes behavior; all clean up code/docs that were misleading or outdated.
+
+- **Removed unimplemented `redacted` field from `ToolResult`.** Was always set to `false` everywhere it was constructed; never had backing implementation. Removed from `types.ts`, `loop.ts`, `toolbox.ts`, and the test fixtures in `provider-anthropic.test.ts` + `provider-cloudflare.test.ts`. If real redaction lands later (regex of secrets, scrubbing stdout), restore the field as a definitive `true` indicator.
+- **Synced `examples/policy.example.yaml`** with the actual schema. Previous version listed `network`, `telemetry.auditLogPath` (silently ignored by loader) and was missing `memory`, `encryption`, `signature`, `paths.sessionsRoot`. New version is a complete annotated reference for a policy file, with comments explaining each section.
+- **Removed unreachable throw in `policy.ts`** at the `paths.sessionsRoot` validation. `DEFAULT_POLICY.paths.sessionsRoot` is always defined at module init, so the throw could never fire. Removed; replaced with a brief comment so the invariant doesn't get re-introduced.
+- **Simplified redundant condition in `processHermesBuffer`.** The previous `TAG_OPEN.startsWith(suffix) && suffix === TAG_OPEN.slice(0, i) && suffix.startsWith("<")` was tautological given the first check. Folded into a single condition + length guard.
+
+### Tests
+- All 140 existing tests still pass.
+- The `redacted: false` removal cascaded through 9 fixture sites (4 `redacted:` lines in source + 5 in test fixtures — actually 10, including a sixth in `cloudflare.test.ts`). Stripped via `awk` in one pass; verified by typecheck + full run.
+
+### Acknowledgement
+Items #2, #6, #7, #8 from the v0.2.2 external review.
+
 ## [0.2.3] — 2026-05-05
 
 ### SECURITY: chains no longer bypass the approval gate

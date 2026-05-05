@@ -121,9 +121,9 @@ const mergeWithDefaults = (input: unknown): Policy => {
 
   // paths
   const pathsIn = isObject(input.paths) ? input.paths : {};
-  if (typeof pathsIn.sessionsRoot !== "string" && DEFAULT_POLICY.paths.sessionsRoot === undefined) {
-    throw new Error("policy: paths.sessionsRoot is required");
-  }
+  // (DEFAULT_POLICY.paths.sessionsRoot is always defined at module init —
+  // see policy.ts L42 — so the previous "is required" throw was unreachable
+  // and was removed in v0.2.4.)
   const paths: Policy["paths"] = {
     sessionsRoot:
       typeof pathsIn.sessionsRoot === "string"

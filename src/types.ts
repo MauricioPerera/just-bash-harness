@@ -57,7 +57,11 @@ export interface ToolResult {
   exitCode: number;
   elapsedMs: number;
   timedOut: boolean;
-  redacted: boolean;            // sensitive args stripped from audit
+  // NOTE: a `redacted: boolean` field used to live here describing whether
+  // sensitive args were stripped from the audit record. It was always
+  // false in practice — never implemented end-to-end — so it was removed
+  // in v0.2.4. If real redaction lands later (regex of secrets, scrubbing
+  // stdout, etc.), restore the field as a definitive `true` indicator.
 }
 
 export interface Toolbox {

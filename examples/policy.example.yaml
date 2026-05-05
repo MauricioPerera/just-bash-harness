@@ -1,26 +1,90 @@
+# harness policy — schema version 1
+# Documented at DESIGN.md §3.5. Copy this file as a starting point and edit
+# values to taste. Any field can be omitted — defaults from policy.ts apply.
+
 version: 1
 
+# ─── skills ────────────────────────────────────────────────────────────────
 skills:
+  # Pack subscriptions are managed via `harness skills add <pack@version>` —
+  # the loader honors entries listed here but the CLI is the source of truth.
   subscribed:
-    # - { pack: github.com/MauricioPerera/some-skill-pack, version: v1.0.0 }
+    # - { pack: github.com/MauricioPerera/agent-skills-pack, version: v2.2.0 }
+
+  # Skill-id → category override. Highest-priority precedence in derivation.
+  # Use sparingly; prefer fixing the skill upstream. Override matches by
+  # full identity OR shortId.
   overrides:
-    # Skill-id → category override. Use sparingly; prefer fixing the skill upstream.
     # "some-skill-id": explicit
+    # "github.com/foo/bar@a1b2c3.../trusted-skill": regular
 
-network:
-  allow: []
-  methods: [GET]
+# ─── trust / signature gate ────────────────────────────────────────────────
+signature:
+  # When true, any skill whose provenance.signature_status != "valid" resolves
+  # as `prohibited` (hard deny). Production posture. Set to false ONLY for
+  # local testing or packs that don't yet ship signed git tags.
+  require_signed: true
 
+# ─── approval matrix ───────────────────────────────────────────────────────
 approval:
   matrix:
     prohibited: deny
     explicit: ask
     regular: allow
 
+# ─── resource limits ───────────────────────────────────────────────────────
 limits:
-  maxTurns: 50
-  maxToolCallsPerTurn: 10
-  maxWallclockMs: 600000
+  maxTurns: 50              # max session.turns before runTurn refuses
+  maxToolCallsPerTurn: 10   # max iterations within a single user message
+  maxWallclockMs: 600000    # 10 min cap per runTurn invocation
 
-telemetry:
-  auditLogPath: .harness/audit.log
+# ─── filesystem layout ─────────────────────────────────────────────────────
+paths:
+  # Where session sub-dirs live. Each session gets ~/.harness/sessions/<id>/.
+  sessionsRoot: ~/.harness/sessions
+  # Skills bank dir. Defaults to agent-skills-cli's defaultBankRoot()
+  # (~/.config/agent-skills/) if omitted.
+  # skillsBankDir: ~/.harness/skills-bank
+
+# ─── memory (just-bash-wiki backed cross-session recall) ──────────────────
+memory:
+  # Master switch. When false, no memory dep is constructed and recall/
+  # persist hooks no-op. When true, the wiki bank at rootDir is created
+  # lazily on first use.
+  enabled: false
+  rootDir: ~/.harness/memory/default
+
+  recall:
+    # Top-K hits before charBudget filter.
+    topK: 5
+    # Approximate char cap across recalled snippets injected into prompt.
+    # ~4 chars/token rule of thumb; 6000 ≈ 1500 tokens of context.
+    charBudget: 6000
+
+  persist:
+    # Persist user msg + final assistant text after each end_turn.
+    autoPersistTurns: true
+    # Skip turns where the assistant text is shorter than this many chars
+    # (avoids polluting memory with trivial "ok" responses).
+    minMessageLength: 20
+
+  compaction:
+    # When enabled and session.turns > windowSize, the provider only sees
+    # the last windowSize entries. Older turns stay in db turns + memory
+    # and are surfaced via recall when relevant.
+    enabled: false
+    windowSize: 50
+
+# ─── encryption (AES-256-GCM at rest) ─────────────────────────────────────
+encryption:
+  # When true, sessions and memory dirs are encrypted on disk. The KEY is
+  # read from the HARNESS_ENCRYPTION_KEY env var (NEVER stored here or on
+  # disk). If enabled and the env var is missing, the harness throws at
+  # construction with a clear message.
+  #
+  # CAVEAT: encryption is one-time per bank dir. Changing key or salt
+  # re-keys the bank — old data becomes unreadable.
+  enabled: false
+  # Optional namespacing for the underlying PBKDF2 derivation.
+  # saltMemory: harness-memory-v1
+  # saltSession: harness-session-v1
