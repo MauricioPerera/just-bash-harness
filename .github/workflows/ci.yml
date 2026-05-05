@@ -35,19 +35,19 @@ jobs:
         with:
           path: just-bash-harness
 
+      # Omit ref: to use each repo's default branch. agent-skills-cli is on
+      # main, just-bash-wiki is on master — actions/checkout handles either.
       - name: Checkout agent-skills-cli (sibling)
         uses: actions/checkout@v4
         with:
           repository: MauricioPerera/agent-skills-cli
           path: agent-skills-cli
-          ref: main
 
       - name: Checkout just-bash-wiki (sibling)
         uses: actions/checkout@v4
         with:
           repository: MauricioPerera/just-bash-wiki
           path: just-bash-wiki
-          ref: main
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
