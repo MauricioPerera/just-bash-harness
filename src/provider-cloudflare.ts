@@ -185,6 +185,116 @@ const mapFinishReason = (raw: string | null | undefined): StopReason => {
   }
 };
 
+// ─── Hermes-style tool_call parsing ────────────────────────────────────────
+// Some Workers AI models (Hermes 2 Pro and similar) emit tool calls inline
+// in `delta.content` instead of `delta.tool_calls`, wrapped in <tool_call>
+// XML-like tags with Python-repr-style content:
+//
+//   <tool_call>
+//   {'arguments': {'value': 'hello'}, 'name': 'base64-encode'}
+//   </tool_call>
+//
+// We need to detect these blocks across chunked deltas, suppress the raw
+// markup from text events, and emit proper tool_call events.
+
+const TAG_OPEN = "<tool_call>";
+const TAG_CLOSE = "</tool_call>";
+
+interface HermesToolCall {
+  name: string;
+  args: unknown;
+}
+
+/** Parse a Python-repr-ish dict (single-quoted) into a JS object. Best
+ *  effort: replaces single quotes with double quotes and JSON.parse's.
+ *  Returns null on failure. */
+const parseHermesPayload = (raw: string): HermesToolCall | null => {
+  // Trim whitespace and any newlines.
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  // Naive single→double quote swap. Falls over if a value contains a literal
+  // single quote, but Hermes 2 Pro tends to escape those as \\' or use double
+  // quotes in user-provided strings, so this is acceptable for v1.
+  const jsonish = trimmed.replace(/'/g, '"');
+  try {
+    const obj = JSON.parse(jsonish) as Record<string, unknown>;
+    const name = typeof obj["name"] === "string" ? obj["name"] : null;
+    if (name === null) return null;
+    const args = obj["arguments"] ?? {};
+    return { name, args };
+  } catch {
+    return null;
+  }
+};
+
+interface BufferProcessOutput {
+  textToEmit: string;        // content safe to yield as `text` deltas
+  toolCalls: HermesToolCall[]; // complete <tool_call> blocks parsed out
+  remaining: string;          // partial tag tail to keep in buffer
+}
+
+/** Process a content buffer, splitting it into safe-to-emit text, fully-
+ *  closed <tool_call> blocks, and a tail that may be a partial tag. */
+const processHermesBuffer = (buffer: string): BufferProcessOutput => {
+  const toolCalls: HermesToolCall[] = [];
+  const textParts: string[] = [];
+  let remaining = buffer;
+
+  while (true) {
+    const openIdx = remaining.indexOf(TAG_OPEN);
+    if (openIdx === -1) break;
+
+    // Text before the tag is safe to emit.
+    if (openIdx > 0) textParts.push(remaining.slice(0, openIdx));
+
+    const afterOpen = remaining.slice(openIdx + TAG_OPEN.length);
+    const closeIdx = afterOpen.indexOf(TAG_CLOSE);
+    if (closeIdx === -1) {
+      // Open without close — wait for more content. Keep from openIdx onward.
+      remaining = remaining.slice(openIdx);
+      // Return now; the partial open is in `remaining`.
+      return { textToEmit: textParts.join(""), toolCalls, remaining };
+    }
+
+    const inner = afterOpen.slice(0, closeIdx);
+    const parsed = parseHermesPayload(inner);
+    if (parsed !== null) {
+      toolCalls.push(parsed);
+    } else {
+      // Couldn't parse — surface the raw markup as text so the failure is
+      // at least visible, rather than silently dropping the call.
+      textParts.push(`${TAG_OPEN}${inner}${TAG_CLOSE}`);
+    }
+    remaining = afterOpen.slice(closeIdx + TAG_CLOSE.length);
+  }
+
+  // No more open tags. Check if `remaining` ends with a possible partial
+  // tag prefix (e.g. "<", "<tool_cal"). If so, hold that suffix back.
+  for (let i = 1; i <= TAG_OPEN.length; i++) {
+    const suffix = remaining.slice(-i);
+    if (TAG_OPEN.startsWith(suffix)) {
+      // The whole remaining tail might still be a tag start in progress.
+      // Only hold it back if it ACTUALLY starts a partial tag — i.e. the
+      // last `i` chars equal the first `i` of the tag and i > 0.
+      if (suffix === TAG_OPEN.slice(0, i) && suffix.startsWith("<")) {
+        textParts.push(remaining.slice(0, remaining.length - i));
+        return {
+          textToEmit: textParts.join(""),
+          toolCalls,
+          remaining: suffix,
+        };
+      }
+    }
+  }
+
+  textParts.push(remaining);
+  return { textToEmit: textParts.join(""), toolCalls, remaining: "" };
+};
+
+// Exported for unit tests.
+export const __test_processHermesBuffer = processHermesBuffer;
+export const __test_parseHermesPayload = parseHermesPayload;
+
 // ─── public factory ─────────────────────────────────────────────────────────
 
 export const createCloudflareProvider = (
@@ -253,6 +363,28 @@ export const createCloudflareProvider = (
       const partialMeta = new Map<number, { id: string; name: string }>();
       let finishReason: StopReason = "end_turn";
 
+      // Hermes-style content-channel tool_call detection. Models like
+      // hermes-2-pro emit <tool_call>{...}</tool_call> inside delta.content
+      // instead of populating delta.tool_calls. We accumulate content
+      // across chunks and emit synthesized tool_call events when complete
+      // blocks are seen.
+      let hermesContentBuffer = "";
+      let hermesToolCallCounter = 0;
+      let hermesEmittedCount = 0;
+      const emitHermesToolCalls = function* (parsed: HermesToolCall[]): Generator<TurnEvent> {
+        for (const p of parsed) {
+          hermesToolCallCounter++;
+          const fullId = nameToId.get(p.name);
+          yield {
+            type: "tool_call",
+            id: `hermes-tool-${hermesToolCallCounter}`,
+            skill: (fullId ?? p.name) as SkillId,
+            args: p.args,
+          };
+          hermesEmittedCount++;
+        }
+      };
+
       try {
         while (true) {
           const { value, done } = await reader.read();
@@ -283,7 +415,17 @@ export const createCloudflareProvider = (
             const delta = choice.delta;
 
             if (delta?.content) {
-              yield { type: "text", delta: delta.content };
+              // Route through the Hermes-aware processor. For models that
+              // don't use the <tool_call> convention, every char is plain
+              // text and this is effectively pass-through. For Hermes,
+              // tag content is suppressed and emitted as tool_call events.
+              hermesContentBuffer += delta.content;
+              const out = processHermesBuffer(hermesContentBuffer);
+              hermesContentBuffer = out.remaining;
+              if (out.textToEmit.length > 0) {
+                yield { type: "text", delta: out.textToEmit };
+              }
+              yield* emitHermesToolCalls(out.toolCalls);
             }
             if (delta?.reasoning) {
               yield { type: "thinking", delta: delta.reasoning };
@@ -312,7 +454,22 @@ export const createCloudflareProvider = (
           }
         }
 
-        // Flush buffered tool calls in stable order.
+        // Flush any remaining Hermes content buffer. If it still contains
+        // a partial unfinished <tool_call> tag, surface as text so the
+        // failure is visible.
+        if (hermesContentBuffer.length > 0) {
+          const tail = processHermesBuffer(hermesContentBuffer);
+          if (tail.textToEmit.length > 0) {
+            yield { type: "text", delta: tail.textToEmit };
+          }
+          yield* emitHermesToolCalls(tail.toolCalls);
+          if (tail.remaining.length > 0) {
+            // Unterminated <tool_call> — emit as text so the user sees it.
+            yield { type: "text", delta: tail.remaining };
+          }
+        }
+
+        // Flush buffered openai-style tool calls in stable order.
         const sortedIndices = Array.from(partialMeta.keys()).sort((a, b) => a - b);
         for (const idx of sortedIndices) {
           const meta = partialMeta.get(idx);
@@ -333,6 +490,13 @@ export const createCloudflareProvider = (
             skill: (fullId ?? meta.name) as SkillId,
             args: parsed,
           };
+        }
+
+        // Hermes responds with finish_reason: "stop" even when it emitted
+        // tool calls in content. If we synthesized any, override to tool_use
+        // so the loop knows to feed back tool_results.
+        if (hermesEmittedCount > 0 && finishReason === "end_turn") {
+          finishReason = "tool_use";
         }
 
         yield { type: "stop", reason: finishReason };

@@ -2,6 +2,41 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.2] — 2026-05-05
+
+### Hermes-style `<tool_call>` parser in the Cloudflare provider
+
+Hermes 2 Pro and similar models on Workers AI emit tool calls inline in `delta.content` as XML-like tags with Python-repr-style payloads, NOT in `delta.tool_calls`:
+
+```
+<tool_call>
+{'arguments': {'value': 'hello'}, 'name': 'base64-encode'}
+</tool_call>
+```
+
+Plus they return `finish_reason: "stop"` even when a tool call was emitted. The provider's OpenAI-compat parser previously missed these — Granite/Gemma worked because they use the standard `tool_calls` array, but Hermes failed silently.
+
+Fix: a buffer-aware text processor that:
+- Detects `<tool_call>...</tool_call>` blocks across chunked deltas (handles partial tags split mid-stream)
+- Parses the Python-repr-style inner content (single-quote → double-quote → JSON.parse)
+- Suppresses raw markup from text events the user sees
+- Synthesizes proper `tool_call` TurnEvents with name → full SkillId mapping
+- When tool calls are synthesized this way, overrides `finish_reason: "stop"` to `"tool_use"` so the loop knows to feed back tool_results
+
+### Tests
+- 13 new unit tests in `provider-cloudflare.test.ts`:
+  - `parseHermesPayload` — single-quoted dict, with newlines, missing name, garbage
+  - `processHermesBuffer` — plain text, complete block, text+tag+text, incomplete tag, partial open, two tags, malformed inner content, lone `<`, ambiguous `<` mid-text
+- 1 new smoke `scratch/live-test-hermes.ts` — replays the EXACT 31-chunk SSE stream captured live from `@hf/nousresearch/hermes-2-pro-mistral-7b` via the MCP connector. **5/5 checks PASS.**
+- Total unit tests: 121 → 134.
+
+### What still works unchanged
+- Granite, Gemma, Llama, etc. that use the standard `delta.tool_calls` array — every existing test passed without modification.
+- Anthropic provider — unchanged.
+
+### Caveat
+The Python-repr parser is naive: it does single → double quote replacement. Strings containing literal single quotes (`"user's input"`) would break. Hermes 2 Pro tends to escape these or use double quotes around user content, so this is acceptable for v1; can be hardened with a proper Python-repr tokenizer if a real failure surfaces.
+
 ## [0.2.1] — 2026-05-05
 
 ### Chains (spec §2.8) — multi-skill orchestration with output piping

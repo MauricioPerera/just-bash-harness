@@ -551,6 +551,115 @@ test("cloudflare provider: args without 'default' end up in required[]", async (
   assert.ok("required_arg" in params.properties);
 });
 
+// ─── Hermes-style tool_call parsing ────────────────────────────────────────
+
+import {
+  __test_parseHermesPayload as parseHermesPayload,
+  __test_processHermesBuffer as processHermesBuffer,
+} from "./provider-cloudflare.js";
+
+test("hermes parser: parses single-quoted python-repr dict", () => {
+  const result = parseHermesPayload(
+    `{'arguments': {'value': 'hello'}, 'name': 'base64-encode'}`,
+  );
+  assert.equal(result?.name, "base64-encode");
+  assert.deepEqual(result?.args, { value: "hello" });
+});
+
+test("hermes parser: parses with newlines + spacing", () => {
+  const result = parseHermesPayload(
+    `\n  {'name': 'echo', 'arguments': {'msg': 'hi'}}  \n`,
+  );
+  assert.equal(result?.name, "echo");
+  assert.deepEqual(result?.args, { msg: "hi" });
+});
+
+test("hermes parser: returns null on missing name", () => {
+  const result = parseHermesPayload(`{'arguments': {'value': 'x'}}`);
+  assert.equal(result, null);
+});
+
+test("hermes parser: returns null on garbage", () => {
+  assert.equal(parseHermesPayload("not even close"), null);
+  assert.equal(parseHermesPayload(""), null);
+});
+
+test("hermes buffer: plain text passes through", () => {
+  const out = processHermesBuffer("hello world, how are you?");
+  assert.equal(out.textToEmit, "hello world, how are you?");
+  assert.equal(out.toolCalls.length, 0);
+  assert.equal(out.remaining, "");
+});
+
+test("hermes buffer: complete tool_call block extracted, no text", () => {
+  const buf = `<tool_call>\n{'arguments': {'value': 'hi'}, 'name': 'echo'}\n</tool_call>`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.toolCalls[0]!.name, "echo");
+  assert.deepEqual(out.toolCalls[0]!.args, { value: "hi" });
+  assert.equal(out.textToEmit, "");
+  assert.equal(out.remaining, "");
+});
+
+test("hermes buffer: text + tool_call + text", () => {
+  const buf = `Sure! <tool_call>\n{'name': 'echo', 'arguments': {'msg': 'hi'}}\n</tool_call> here you go.`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.textToEmit, "Sure!  here you go.");
+  assert.equal(out.remaining, "");
+});
+
+test("hermes buffer: incomplete tag holds back from emission", () => {
+  const buf = `Sure thing <tool_cal`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.textToEmit, "Sure thing ");
+  assert.equal(out.toolCalls.length, 0);
+  assert.equal(out.remaining, "<tool_cal");
+});
+
+test("hermes buffer: tag opened but not closed → all from < kept buffered", () => {
+  const buf = `Hello <tool_call>{'name': 'echo`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.textToEmit, "Hello ");
+  assert.equal(out.toolCalls.length, 0);
+  assert.equal(out.remaining, "<tool_call>{'name': 'echo");
+});
+
+test("hermes buffer: two tool_calls in one buffer", () => {
+  const buf =
+    `<tool_call>{'name': 'a', 'arguments': {}}</tool_call>` +
+    `text between` +
+    `<tool_call>{'name': 'b', 'arguments': {'x': 1}}</tool_call>`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 2);
+  assert.equal(out.toolCalls[0]!.name, "a");
+  assert.equal(out.toolCalls[1]!.name, "b");
+  assert.equal(out.textToEmit, "text between");
+});
+
+test("hermes buffer: malformed inner content surfaces as raw text (not silently dropped)", () => {
+  const buf = `<tool_call>this isn't valid python repr</tool_call>`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 0);
+  assert.match(out.textToEmit, /<tool_call>/);
+});
+
+test("hermes buffer: bare '<' alone is held back", () => {
+  // The lone '<' could be the start of a tag.
+  const out = processHermesBuffer("hello <");
+  assert.equal(out.textToEmit, "hello ");
+  assert.equal(out.remaining, "<");
+});
+
+test("hermes buffer: '<' followed by non-tag char → emit all", () => {
+  // A lone '<' followed by something that can't continue the tag should
+  // ideally be emitted, but our heuristic conservatively holds the '<'
+  // and waits for more. The next chunk will resolve it.
+  const out = processHermesBuffer("a<b<tool_call>{'name':'x','arguments':{}}</tool_call>");
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.toolCalls[0]!.name, "x");
+});
+
 test("cloudflare provider: args fully optional → no required field in schema", async () => {
   let body: { tools: Array<{ function: { parameters: Record<string, unknown> } }> } | null = null;
   const fetchMock: typeof fetch = async (_url, init) => {
