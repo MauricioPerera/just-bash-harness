@@ -125,3 +125,11 @@ jobs:
       - name: Smoke — Hermes <tool_call> tag parser
         working-directory: just-bash-harness
         run: npx tsx scratch/live-test-hermes.ts
+
+      # Regression guard: verifies that policy.memory.compaction.summarize.enabled=false
+      # preserves the v0.1.7 behavior byte-for-byte (no "Earlier conversation digest"
+      # block in systemPrompt, no surprise summary provider call, no compaction-summary
+      # memory record). Without this, "strict additive" is asserted but unproven.
+      - name: Smoke — summarize=false regression guard
+        working-directory: just-bash-harness
+        run: npm run smoke:summarize-disabled

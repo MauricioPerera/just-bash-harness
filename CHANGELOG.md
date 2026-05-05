@@ -43,7 +43,7 @@ The `redacted` field on `ToolResult` was removed in `0.2.4` because nothing ever
 
 Encryption was a one-way decision since `0.1.8`: changing `HARNESS_ENCRYPTION_KEY` made existing data unreadable. For long-lived sessions and memory banks, that meant key rotation was effectively impossible. Now there is an explicit migration path.
 
-- New subcommand: `harness rekey --from-env <var> --to-env <var> [--target sessions|memory|all] [--dry-run]`.
+- New subcommand: `harness rekey --from-env <var> --to-env <var> [--target sessions|memory|all] [--dry-run]`. *(Note: the `--target` choices were extended to include `skills` in a post-publish doctrine commit on the same day; the runtime accepts `sessions|memory|skills|all`. See the "Invariants touched" section below and `cli.ts` HELP for the current spec.)*
 - Strategy per bank dir: export-with-old → init staging dir with new key → import → atomic rename. Original moves to `<dir>.rekey-backup-<ts>` (kept for verification, deletion is the user's job).
 - `--dry-run` runs export-only — proves the OLD key correctly decrypts every collection without touching original storage.
 - Refuses to run if any target dir was modified <60s ago (best-effort detection of a concurrent harness process).
