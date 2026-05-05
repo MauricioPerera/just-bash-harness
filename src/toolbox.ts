@@ -64,6 +64,9 @@ const summarize = (skill: IndexedSkill): SkillSummary => ({
   filesystem: skill.filesystem ?? [],
   idempotent: skill.idempotent ?? false,
   args: (skill.args ?? {}) as Record<string, unknown>,
+  ...(skill.chains !== undefined && skill.chains.length > 0
+    ? { chains: skill.chains }
+    : {}),
 });
 
 /** Collect every shell command name a skill might need from `required_commands`
@@ -160,7 +163,7 @@ export const createToolbox = (opts: ToolboxOpts): Toolbox => {
       args: Record<string, unknown>,
       intent?: string,
     ): Promise<ToolResult> {
-      const result = await runExec({
+      const parentResult = await runExec({
         bank,
         skillIdentifier: skill.id, // full identity per spec §1
         args,
@@ -168,14 +171,121 @@ export const createToolbox = (opts: ToolboxOpts): Toolbox => {
         ...(intent !== undefined ? { intent } : {}),
         ...(tenant !== undefined ? { tenant } : {}),
       });
+
+      const parentToolResult: ToolResult = {
+        ok: parentResult.exit_code === 0 && !parentResult.timed_out,
+        command: parentResult.command,
+        stdout: parentResult.stdout,
+        stderr: parentResult.stderr,
+        exitCode: parentResult.exit_code,
+        elapsedMs: parentResult.elapsed_ms,
+        timedOut: parentResult.timed_out,
+        redacted: false,
+      };
+
+      // No chain or parent failed → return parent result alone.
+      if (
+        skill.chains === undefined ||
+        skill.chains.length === 0 ||
+        !parentToolResult.ok
+      ) {
+        return parentToolResult;
+      }
+
+      // ── Chain execution (spec §2.8) ──────────────────────────────────
+      // Run each declared chain step in order, with simple ${VAR}
+      // substitution from previously-captured output_vars. Aggregated
+      // stdouts are concatenated with skill-id banners; aggregated exit
+      // is the worst non-zero across the chain (or 0 if all succeeded).
+
+      const captured = new Map<string, string>();
+      // Seed with parent's output_var if it had one. Spec: parent skills
+      // can't declare their own output_var via the chain (chain entries
+      // are children). We expose parent stdout under a default name so
+      // children can reference it.
+      captured.set("PARENT_OUTPUT", parentToolResult.stdout);
+
+      const stdoutParts: string[] = [
+        `[${skill.shortId}]`,
+        parentToolResult.stdout,
+      ];
+      const stderrParts: string[] = parentToolResult.stderr
+        ? [`[${skill.shortId}]`, parentToolResult.stderr]
+        : [];
+      let elapsedMsTotal = parentToolResult.elapsedMs;
+      let worstExit = 0;
+      let timedOut = parentToolResult.timedOut;
+      let lastCommand = parentToolResult.command;
+
+      const substitute = (value: unknown): unknown => {
+        if (typeof value === "string") {
+          return value.replace(/\$\{([A-Z_][A-Z0-9_]*)\}/g, (_match, varName: string) =>
+            captured.get(varName) ?? "",
+          );
+        }
+        if (Array.isArray(value)) return value.map(substitute);
+        if (value !== null && typeof value === "object") {
+          const out: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(value)) out[k] = substitute(v);
+          return out;
+        }
+        return value;
+      };
+
+      for (const step of skill.chains) {
+        const childIdentifier = step.skill;
+        const childArgs = (step.args ? substitute(step.args) : {}) as Record<
+          string,
+          unknown
+        >;
+
+        let childResult;
+        try {
+          childResult = await runExec({
+            bank,
+            skillIdentifier: childIdentifier,
+            args: childArgs,
+            timeoutSec,
+            ...(intent !== undefined ? { intent: `[chain] ${intent}` } : {}),
+            ...(tenant !== undefined ? { tenant } : {}),
+          });
+        } catch (err) {
+          stderrParts.push(`[chain ${childIdentifier}]`);
+          stderrParts.push((err as Error).message);
+          worstExit = worstExit === 0 ? 1 : worstExit;
+          break;
+        }
+
+        stdoutParts.push(`[chain ${childIdentifier.split("/").at(-1) ?? childIdentifier}]`);
+        stdoutParts.push(childResult.stdout);
+        if (childResult.stderr) {
+          stderrParts.push(`[chain ${childIdentifier.split("/").at(-1) ?? childIdentifier}]`);
+          stderrParts.push(childResult.stderr);
+        }
+        elapsedMsTotal += childResult.elapsed_ms;
+        timedOut = timedOut || childResult.timed_out;
+        lastCommand = childResult.command;
+        if (childResult.exit_code !== 0 && worstExit === 0) {
+          worstExit = childResult.exit_code;
+        }
+
+        // Capture output_var if declared.
+        if (step.output_var !== undefined) {
+          captured.set(step.output_var, childResult.stdout);
+        }
+
+        // Stop the chain on first non-zero exit (don't cascade failures).
+        if (childResult.exit_code !== 0 || childResult.timed_out) break;
+      }
+
       return {
-        ok: result.exit_code === 0 && !result.timed_out,
-        command: result.command,
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exitCode: result.exit_code,
-        elapsedMs: result.elapsed_ms,
-        timedOut: result.timed_out,
+        ok: worstExit === 0 && !timedOut,
+        command: lastCommand,
+        stdout: stdoutParts.join("\n"),
+        stderr: stderrParts.join("\n"),
+        exitCode: worstExit,
+        elapsedMs: elapsedMsTotal,
+        timedOut,
         redacted: false,
       };
     },

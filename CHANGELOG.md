@@ -2,6 +2,43 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.1] — 2026-05-05
+
+### Chains (spec §2.8) — multi-skill orchestration with output piping
+
+A skill's `chains` field declares additional skills to run automatically after the parent succeeds. The harness now executes them as an atomic unit — one approval, one ToolResult — with `${VAR}` substitution between steps.
+
+### How it works
+- After the parent's `runExec` succeeds, the harness iterates `skill.chains[]`.
+- Each step's `args` are scanned for `${VAR}` placeholders and replaced with values captured from previously-declared `output_var`s.
+- Special variable `${PARENT_OUTPUT}` always holds the parent's stdout.
+- After each step runs, if it declared `output_var: "X"`, its stdout is captured as `${X}` for downstream steps.
+- Any non-zero exit or timeout in the chain stops further steps; the worst exit code wins; aggregated stdout/stderr is returned with `[skill-id]` and `[chain skill-id]` banners separating sections.
+
+### Approval semantics
+Chains derive a SINGLE approval category at the parent's tool_call boundary — the LLM sees one tool, the user approves once. Each chain step still runs in its own per-skill `runExec` sandbox (FS scratch, network allowlist, env scoping per spec §4.4), so security isolation is preserved.
+
+### Types
+- `SkillSummary.chains?: readonly ChainStep[]` — populated by `summarize()` from the IndexedSkill. The agent-skills-cli's `ChainStep` type (`{ skill, args?, output_var? }`) is re-exported from `src/types.ts` for embedders.
+
+### Smoke (`scratch/live-test-chains.ts`)
+Three synthetic skills:
+- parent → echoes "from-parent"
+- step1 → consumes `${PARENT_OUTPUT}`, prints "step1-saw:from-parent", captured as STEP1_VAR
+- step2 → consumes `${STEP1_VAR}`, prints "step2-saw:step1-saw:from-parent"
+
+Runs the parent through the toolbox and asserts:
+- result.ok = true and exitCode = 0
+- stdout contains the parent banner + literal output
+- step1 banner + correctly-substituted output
+- step2 banner + chain-of-vars output ("step2-saw:step1-saw:from-parent")
+
+**8/8 checks PASS.**
+
+### Limits noted
+- The agent-skills-pack@v2.2.0 doesn't currently use chains — feature is implemented in the harness regardless. Skills declaring chains can be authored independently.
+- During smoke development, an awk-based reverse step hit just-bash's per-command loop limit (10K iterations). Lesson: chain steps must respect the just-bash loop budget; for non-trivial transformations the user can split into multiple chained skills rather than one heavy step. Documented as guidance, not as a code change.
+
 ## [0.2.0] — 2026-05-05
 
 ### Interactive REPL

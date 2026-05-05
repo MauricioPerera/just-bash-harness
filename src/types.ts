@@ -4,6 +4,7 @@
 import type {
   IndexedSkill,
   AuditEntry,
+  ChainStep,
 } from "@rckflr/agent-skills-cli";
 
 // ─── identifiers ────────────────────────────────────────────────────────────
@@ -30,6 +31,10 @@ export interface SkillSummary {
   /** The skill's `args` map per spec §2.6. Needed by the LLM to emit
    *  well-typed tool calls, so it lives on the summary not just resolved. */
   args: Record<string, unknown>;
+  /** Skills declared by this skill to run automatically after it succeeds
+   *  (spec §2.8). Chain executes atomically from the LLM's view — one
+   *  approval, one ToolResult. Empty / undefined = no chain. */
+  chains?: readonly ChainStep[];
 }
 
 /** A skill that has passed validation and is ready to execute.
@@ -68,7 +73,7 @@ export interface Toolbox {
 }
 
 // Re-export for callers — saves them an import of agent-skills-cli for raw types.
-export type { AuditEntry, IndexedSkill };
+export type { AuditEntry, IndexedSkill, ChainStep };
 
 // ─── provider (LLM) ─────────────────────────────────────────────────────────
 
