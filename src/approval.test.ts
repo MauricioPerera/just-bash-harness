@@ -234,3 +234,85 @@ test("createApprovalGate: record persists via audit callback", async () => {
 // Type assertion to make sure DerivedCategory shape stays stable
 const _shape: DerivedCategory = { category: "regular", derivedFrom: ["x"] };
 void _shape;
+
+// ─── chain-aware derivation (security: closes parent-bypass) ──────────────
+
+test("deriveCategory: chains[] union — child with network escalates a regular-looking parent", () => {
+  // Parent looks regular: signed, idempotent, no network. Child has network.
+  // Without chain-awareness this auto-allowed; with it, escalates to explicit
+  // so the user sees the network capability before approval.
+  const parent = baseSkill({ idempotent: true, network: [] });
+  const child = baseSkill({
+    id: "uploader",
+    shortId: "uploader",
+    idempotent: true,
+    network: ["https://evil.com"],
+  });
+  const r = deriveCategory(parent, basePolicy(), [child]);
+  assert.equal(r.category, "explicit");
+  assert.ok(r.derivedFrom.some((s) => s.startsWith("chain:uploader network:")));
+});
+
+test("deriveCategory: chains[] union — child non-idempotent escalates idempotent parent", () => {
+  const parent = baseSkill({ idempotent: true });
+  const child = baseSkill({
+    id: "side-effect",
+    shortId: "side-effect",
+    idempotent: false,
+  });
+  const r = deriveCategory(parent, basePolicy(), [child]);
+  assert.equal(r.category, "explicit");
+  assert.ok(r.derivedFrom.includes("chain:side-effect non-idempotent"));
+});
+
+test("deriveCategory: chains[] union — child with bad signature → prohibited (signature gate over union)", () => {
+  const parent = baseSkill({ signatureStatus: "valid" });
+  const child = baseSkill({
+    id: "unsigned-child",
+    shortId: "unsigned-child",
+    signatureStatus: "unsigned",
+  });
+  const r = deriveCategory(
+    parent,
+    basePolicy({ signature: { require_signed: true } }),
+    [child],
+  );
+  assert.equal(r.category, "prohibited");
+  assert.ok(
+    r.derivedFrom.some((s) => s.includes("chain:unsigned-child")),
+  );
+});
+
+test("deriveCategory: chains[] union — multiple chain steps, all clean → still regular", () => {
+  const parent = baseSkill({ idempotent: true });
+  const c1 = baseSkill({ id: "a", shortId: "a", idempotent: true });
+  const c2 = baseSkill({ id: "b", shortId: "b", idempotent: true });
+  const r = deriveCategory(parent, basePolicy(), [c1, c2]);
+  assert.equal(r.category, "regular");
+});
+
+test("deriveCategory: chains[] union — empty chainSkills behaves identically to old single-skill call", () => {
+  // Backwards compat: callers that don't pass chainSkills get the same
+  // result as before.
+  const skill = baseSkill({ idempotent: false });
+  const r1 = deriveCategory(skill, basePolicy());
+  const r2 = deriveCategory(skill, basePolicy(), []);
+  assert.deepEqual(r1, r2);
+});
+
+test("deriveCategory: chains[] union — override on parent still wins (escape hatch preserved)", () => {
+  const parent = baseSkill();
+  const child = baseSkill({
+    id: "danger",
+    shortId: "danger",
+    network: ["https://x"],
+  });
+  const policy = basePolicy({
+    skills: { subscribed: [], overrides: { [parent.id]: "regular" } },
+  });
+  const r = deriveCategory(parent, policy, [child]);
+  // Override forces regular even though child has network capability —
+  // the user has explicitly opted into trusting this whole chain.
+  assert.equal(r.category, "regular");
+  assert.deepEqual(r.derivedFrom, ["override:regular"]);
+});

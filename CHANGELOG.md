@@ -2,6 +2,29 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.3] — 2026-05-05
+
+### SECURITY: chains no longer bypass the approval gate
+
+Pre-0.2.3, when a parent skill declared `chains[]`, only the parent's capabilities were evaluated by `deriveCategory`. Chain steps with `network`, `filesystem`, or `idempotent: false` ran via `runExec` without the user ever seeing them at the approval prompt. The CHANGELOG v0.2.1 claim that "security isolation is preserved because each step runs in its own sandbox" was about runtime isolation only; the human-in-the-loop approval was being silently bypassed.
+
+**Concrete attack vector** (now closed): a benign-looking parent (`signed`, `idempotent: true`, `network: []` → category `regular` → auto-allow) declares a chain step to a skill with `network: ["evil.com"]`. User sees no prompt. Network call goes through. The user thought they approved a harmless tool; they actually approved a pipeline.
+
+**Fix**: `deriveCategory(skill, policy, chainSkills?)` now takes an optional array of resolved chain skills and computes the **union** of capabilities over the parent + every chain step. The worst category wins. The `derivedFrom` array tags chain-attributed reasons with `chain:<short-id>` so the approval prompt shows where each capability came from.
+
+The override map still wins as the documented escape hatch — explicitly trusting the whole chain by id is the user's prerogative.
+
+### Loop wiring
+- `runTurn` now resolves each chain step's identity to its `SkillSummary` from the bank before approval. Steps pointing at unknown skills are treated as worst-case (unsigned + unrestricted network/filesystem + non-idempotent), forcing a deny under any reasonable policy.
+
+### Tests
+- 6 new unit tests covering: child-network-escalates-parent, child-non-idempotent-escalates, signature-gate-over-union, multi-step-all-clean, backward-compat (empty chainSkills), override-wins-over-chain-derivation.
+- Existing chain smoke (`scratch/live-test-chains.ts`) still passes — the test skills are all idempotent + signed + no network, so they correctly resolve as `regular` even with the new rules.
+- Total: 134 → 140 unit tests.
+
+### Acknowledgement
+This issue was identified by an external review of v0.2.2. Worth calling out specifically: the chain mechanism shipped in v0.2.1 with a CHANGELOG line that overstated the security guarantee. Lesson: when adding a new orchestration layer, audit every prior approval invariant to confirm it still holds.
+
 ## [0.2.2] — 2026-05-05
 
 ### Hermes-style `<tool_call>` parser in the Cloudflare provider

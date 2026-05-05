@@ -20,22 +20,29 @@ export interface DerivedCategory {
 }
 
 /**
- * Map a resolved skill + policy → category.
+ * Map a resolved skill + optional chain skills + policy → category.
  *
- * Inputs (all already in the spec):
- *   - skill.signatureStatus
- *   - skill.network
- *   - skill.filesystem
- *   - skill.idempotent
- *   - policy.signature.require_signed
- *   - policy.skills.overrides[skill.shortId | skill.id]
+ * When `chainSkills` is non-empty (the parent declared chains[]), the
+ * effective category is the WORST (most restrictive) over the parent
+ * plus every chain step. This closes the human-approval bypass that
+ * would otherwise let a benign-looking parent execute privileged chain
+ * steps without the user seeing them at the approval gate.
  *
- * The override map wins over derivation. After overrides, signature gate
- * wins over capability heuristics.
+ * Precedence:
+ *   1. Override map by parent id/shortId (highest — escape hatch).
+ *   2. Signature gate over parent + any chain step (any unsigned →
+ *      prohibited when require_signed).
+ *   3. Capability heuristics: union of network/filesystem flags + any
+ *      non-idempotent step → explicit.
+ *   4. Default → regular.
+ *
+ * `derivedFrom` reasons attribute escalations to specific chain steps
+ * so the approval prompt can show what's being approved.
  */
 export const deriveCategory = (
   skill: ResolvedSkill,
   policy: Policy,
+  chainSkills: readonly ResolvedSkill[] = [],
 ): DerivedCategory => {
   const reasons: string[] = [];
 
@@ -47,24 +54,32 @@ export const deriveCategory = (
     return { category: override, derivedFrom: reasons };
   }
 
-  // 2. Signature gate.
-  if (
-    policy.signature.require_signed &&
-    skill.signatureStatus !== "valid"
-  ) {
-    reasons.push(`signature:${skill.signatureStatus}`);
-    return { category: "prohibited", derivedFrom: reasons };
+  // The set of skills whose capabilities count: parent + every chain step.
+  const allSkills: readonly ResolvedSkill[] = [skill, ...chainSkills];
+
+  // 2. Signature gate (any unsigned in the pipeline → prohibited).
+  if (policy.signature.require_signed) {
+    for (const s of allSkills) {
+      if (s.signatureStatus !== "valid") {
+        const tag = s === skill ? "" : `chain:${s.shortId} `;
+        reasons.push(`${tag}signature:${s.signatureStatus}`);
+        return { category: "prohibited", derivedFrom: reasons };
+      }
+    }
   }
 
-  // 3. Capability heuristics — escalate to explicit when any apply.
-  if (skill.network.length > 0) {
-    reasons.push(`network:${skill.network.length}`);
-  }
-  if (skill.filesystem.length > 0) {
-    reasons.push(`filesystem:${skill.filesystem.length}`);
-  }
-  if (!skill.idempotent) {
-    reasons.push("non-idempotent");
+  // 3. Capability heuristics — escalate to explicit if any step has any.
+  for (const s of allSkills) {
+    const tag = s === skill ? "" : `chain:${s.shortId} `;
+    if (s.network.length > 0) {
+      reasons.push(`${tag}network:${s.network.length}`);
+    }
+    if (s.filesystem.length > 0) {
+      reasons.push(`${tag}filesystem:${s.filesystem.length}`);
+    }
+    if (!s.idempotent) {
+      reasons.push(`${tag}non-idempotent`);
+    }
   }
 
   if (reasons.length > 0) {

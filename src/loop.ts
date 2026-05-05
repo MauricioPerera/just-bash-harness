@@ -237,7 +237,31 @@ export const runTurn = async (
       }
 
       const resolved: ResolvedSkill = { ...summary };
-      const derived = deriveCategory(resolved, deps.policy);
+
+      // Resolve chain step identities to ResolvedSkills so deriveCategory
+      // can compute the union over parent + all chain steps. A chain step
+      // pointing at an unknown skill is treated as the worst case
+      // (prohibited via missing-skill marker).
+      const chainSkills: ResolvedSkill[] = [];
+      for (const step of resolved.chains ?? []) {
+        const stepSummary = summaryById.get(step.skill);
+        if (stepSummary === undefined) {
+          // Synthetic worst-case capabilities so the chain gets rejected.
+          chainSkills.push({
+            ...resolved, // copy parent's metadata as scaffolding
+            id: step.skill,
+            shortId: step.skill.split("/").at(-1) ?? step.skill,
+            signatureStatus: "unsigned",
+            network: ["*"],
+            filesystem: ["*"],
+            idempotent: false,
+          });
+        } else {
+          chainSkills.push({ ...stepSummary });
+        }
+      }
+
+      const derived = deriveCategory(resolved, deps.policy, chainSkills);
       const action: PendingAction = {
         skillId: resolved.id,
         category: derived.category,
