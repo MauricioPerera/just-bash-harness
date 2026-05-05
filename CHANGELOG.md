@@ -2,6 +2,35 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.7] — 2026-05-05
+
+### Compaction (lifts the maxTurns ceiling)
+
+When memory is enabled and compaction is on, `runTurn` slices `session.turns` down to the last `windowSize` entries before passing them to the provider as `input.history`. The dropped turns are NOT lost: they remain in `db turns` (full session audit) AND in memory (auto-persisted as turn-kind records during their original processing). The harness's recall mechanism brings back relevant content from the dropped turns by similarity to the current user message.
+
+This breaks the false trade-off between long sessions and bounded context.
+
+### Policy
+- New `memory.compaction: { enabled, windowSize }` config. Default `enabled: false, windowSize: 50`. Validated in `policy.ts` with sane fallback (windowSize must be >= 1).
+
+### Loop
+- `runTurn` now slices `session.turns` per the policy when memory is enabled and compaction triggers. A debug line goes to `onThinking` reporting how many turns were dropped: `[compaction: N older turn(s) dropped from active history; recall covers them]`.
+- Each persisted Turn entry corresponds to one complete user-message-to-end_turn cycle (`appendTurn` is called once per `runTurn`), so slicing the array gives clean tool_use/tool_result pairing at the boundary — no orphan tool_result blocks reach the provider.
+
+### Smoke
+- `scratch/live-test-compaction.ts`: builds a 30-turn session with compaction off, then runs one more turn with compaction on (windowSize=10). Asserts via SpyProvider that:
+  - Provider received exactly 10 history entries
+  - Oldest is turn 21 (TOTAL - WINDOW + 1)
+  - Newest is turn 30
+  - Session db has all 31 turns (audit invariant)
+  - Memory has all 30 auto-persisted turns
+- 5/5 checks PASS.
+
+### What this enables in practice
+A session can now run for hundreds of turns without the provider context blowing up. As the conversation drifts, older specifics fade from the verbatim transcript but stay searchable. The agent stays "in scope" via memory recall while the LLM only pays for the active window.
+
+Pair with `policy.limits.maxTurns: <high>` and `compaction.windowSize: <small>` for long-running agents.
+
 ## [0.1.6] — 2026-05-05
 
 ### Memory CLI surface enrichment

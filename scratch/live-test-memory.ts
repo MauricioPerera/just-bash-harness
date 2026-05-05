@@ -92,6 +92,7 @@ const setupShared = async (): Promise<Setup> => {
       rootDir: memoryRoot,
       recall: { topK: 5, charBudget: 6000 },
       persist: { autoPersistTurns: true, minMessageLength: 5 },
+      compaction: { enabled: false, windowSize: 50 },
     },
   };
 

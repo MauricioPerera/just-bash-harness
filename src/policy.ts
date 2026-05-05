@@ -46,6 +46,7 @@ export const DEFAULT_POLICY: Policy = {
     rootDir: join(homedir(), ".harness", "memory", "default"),
     recall: { topK: 5, charBudget: 6000 },
     persist: { autoPersistTurns: true, minMessageLength: 20 },
+    compaction: { enabled: false, windowSize: 50 },
   },
 };
 
@@ -137,6 +138,7 @@ const mergeWithDefaults = (input: unknown): Policy => {
   const memIn = isObject(input.memory) ? input.memory : {};
   const memRecallIn = isObject(memIn.recall) ? memIn.recall : {};
   const memPersistIn = isObject(memIn.persist) ? memIn.persist : {};
+  const memCompactionIn = isObject(memIn.compaction) ? memIn.compaction : {};
   const memory: Policy["memory"] = {
     enabled:
       typeof memIn.enabled === "boolean"
@@ -165,6 +167,17 @@ const mergeWithDefaults = (input: unknown): Policy => {
         typeof memPersistIn.minMessageLength === "number"
           ? memPersistIn.minMessageLength
           : DEFAULT_POLICY.memory.persist.minMessageLength,
+    },
+    compaction: {
+      enabled:
+        typeof memCompactionIn.enabled === "boolean"
+          ? memCompactionIn.enabled
+          : DEFAULT_POLICY.memory.compaction.enabled,
+      windowSize:
+        typeof memCompactionIn.windowSize === "number" &&
+        memCompactionIn.windowSize >= 1
+          ? memCompactionIn.windowSize
+          : DEFAULT_POLICY.memory.compaction.windowSize,
     },
   };
 

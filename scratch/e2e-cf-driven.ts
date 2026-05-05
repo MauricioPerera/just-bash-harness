@@ -137,6 +137,7 @@ const main = async (): Promise<void> => {
         rootDir: "",
         recall: { topK: 5, charBudget: 6000 },
         persist: { autoPersistTurns: false, minMessageLength: 20 },
+        compaction: { enabled: false, windowSize: 50 },
       },
     };
 

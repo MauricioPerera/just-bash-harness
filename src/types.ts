@@ -221,5 +221,19 @@ export interface Policy {
       /** Skip turns where the assistant text is shorter than this many chars. */
       minMessageLength: number;
     };
+    /**
+     * Compaction: cap the active message history sent to the provider.
+     * Older turns stay in `db turns` (full session audit) AND in memory
+     * (auto-persisted), so they're still searchable via recall, just not
+     * verbatim in the LLM context.
+     *
+     * Requires `enabled: true` AND `persist.autoPersistTurns: true` —
+     * otherwise compacting drops information that has nowhere to live.
+     */
+    compaction: {
+      enabled: boolean;
+      /** Active history is the last `windowSize` turns. >= 1. */
+      windowSize: number;
+    };
   };
 }

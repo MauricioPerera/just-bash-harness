@@ -111,6 +111,32 @@ export const runTurn = async (
     }
   }
 
+  // Compaction: cap the active history window. Each session.turns entry is
+  // a complete user-message-to-end_turn cycle (appendTurn called once at
+  // the end of each runTurn invocation), so slicing the array gives clean
+  // tool_use/tool_result pairing at the boundary.
+  //
+  // Older turns remain in `db turns` (full audit) AND in memory (auto-
+  // persisted as turn-kind records during their original runTurn). The
+  // memory recall earlier in this function brings back relevant snippets,
+  // so semantic context is preserved.
+  const compactionCfg = deps.policy.memory.compaction;
+  const fullHistory = session.turns;
+  const activeHistory =
+    deps.memory &&
+    deps.policy.memory.enabled &&
+    compactionCfg.enabled &&
+    fullHistory.length > compactionCfg.windowSize
+      ? fullHistory.slice(-compactionCfg.windowSize)
+      : fullHistory;
+
+  if (activeHistory.length < fullHistory.length) {
+    const dropped = fullHistory.length - activeHistory.length;
+    opts.handlers?.onThinking?.(
+      `[compaction: ${dropped} older turn(s) dropped from active history; recall covers them]\n`,
+    );
+  }
+
   // Outer driver. We may run multiple provider.turn() rounds within ONE
   // user-message turn if the model emits tool calls and then expects to
   // continue. That's what 'tool_use' stop reason means.
@@ -137,7 +163,7 @@ export const runTurn = async (
       // Append recalled memories to the system prompt. The block is empty
       // when memory is disabled / no recall hit, so this is a no-op cost.
       systemPrompt: baseSystem + memoryBlock,
-      history: session.turns,
+      history: activeHistory,
       ...(pendingUser !== undefined ? { user: pendingUser } : {}),
       ...(pendingResults !== undefined ? { toolResults: pendingResults } : {}),
       availableTools: tools,
