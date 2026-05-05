@@ -34,7 +34,7 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.5";
+const HARNESS_VERSION = "0.1.6";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
@@ -46,10 +46,13 @@ Usage:
   harness audit <sessionId> [--limit N]
   harness skills list [--all]
   harness skills add <pack@version>
-  harness recall <query> [--topK N] [--budget N]
+  harness search <query> [--topK N] [--budget N] [--kind <k>] [--session <id>]
+  harness recall <query>              (alias for search)
   harness memory list [--kind <k>] [--limit N]
   harness memory forget <id>          (or --kind <k> | --session <id>)
   harness memory remember <content> [--kind <k>] [--session <id>]
+  harness memory stats
+  harness memory export <path>
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -527,15 +530,17 @@ const requireMemory = async (
   return { memory, policy };
 };
 
-const cmdRecall = async (args: Args): Promise<number> => {
+const cmdRecall = async (args: Args, label = "recall"): Promise<number> => {
+  // `harness search` and `harness recall` share this implementation.
+  // The label only changes the error prefix.
   const query = args.positional.join(" ");
   if (!query) {
-    process.stderr.write("harness recall: <query> required\n");
+    process.stderr.write(`harness ${label}: <query> required\n`);
     return 64;
   }
   const got = await requireMemory(args);
   if ("error" in got) {
-    process.stderr.write(`harness recall: ${got.error}\n`);
+    process.stderr.write(`harness ${label}: ${got.error}\n`);
     return 78;
   }
   const topK = Number(args.flags.get("topK") ?? "5") || 5;
@@ -543,10 +548,14 @@ const cmdRecall = async (args: Args): Promise<number> => {
   const charBudget = typeof budgetFlag === "string"
     ? Number(budgetFlag) || undefined
     : undefined;
+  const sessionFlag = args.flags.get("session");
+  const kindFlag = args.flags.get("kind");
 
   const hits = await got.memory.recall(query, {
     topK,
     ...(charBudget !== undefined ? { charBudget } : {}),
+    ...(typeof sessionFlag === "string" ? { sessionId: sessionFlag } : {}),
+    ...(typeof kindFlag === "string" ? { kind: kindFlag } : {}),
   });
   if (hits.length === 0) {
     process.stderr.write("no matches.\n");
@@ -616,6 +625,93 @@ const cmdMemoryForget = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const cmdMemoryStats = async (args: Args): Promise<number> => {
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness memory stats: ${got.error}\n`);
+    return 78;
+  }
+  const all = await got.memory.list({ limit: 100_000 });
+  const byKind = new Map<string, number>();
+  let oldestTs = "";
+  let newestTs = "";
+  for (const r of all) {
+    byKind.set(r.kind, (byKind.get(r.kind) ?? 0) + 1);
+    if (oldestTs === "" || r.ts < oldestTs) oldestTs = r.ts;
+    if (r.ts > newestTs) newestTs = r.ts;
+  }
+  process.stdout.write(`# memory stats\n`);
+  process.stdout.write(`  rootDir:    ${got.policy.memory.rootDir}\n`);
+  process.stdout.write(`  total:      ${all.length}\n`);
+  if (all.length > 0) {
+    process.stdout.write(`  oldest:     ${oldestTs}\n`);
+    process.stdout.write(`  newest:     ${newestTs}\n`);
+    process.stdout.write(`  by kind:\n`);
+    for (const [k, n] of [...byKind.entries()].sort()) {
+      process.stdout.write(`    ${k.padEnd(12)} ${n}\n`);
+    }
+  }
+  return 0;
+};
+
+const cmdMemoryExport = async (args: Args): Promise<number> => {
+  const path = args.positional[1];
+  if (!path) {
+    process.stderr.write("harness memory export: <path> required\n");
+    return 64;
+  }
+  const got = await requireMemory(args);
+  if ("error" in got) {
+    process.stderr.write(`harness memory export: ${got.error}\n`);
+    return 78;
+  }
+  // Walk via list + recall-by-id-equivalent. The Memory interface's recall
+  // returns full content, so we use it with a generic query and a high
+  // topK + no budget to drain everything.
+  const all = await got.memory.list({ limit: 100_000 });
+  if (all.length === 0) {
+    process.stderr.write("no memories to export.\n");
+    return 0;
+  }
+  // For each shallow record, fetch full content via recall (single-record
+  // pull is fine — wiki similarity is irrelevant when we want exact id).
+  // TODO: a Memory.get(id) would be cleaner; today we re-recall with the
+  // title as the query and filter to that id. Workable for v0.1.6.
+  const records: Array<{
+    id: string;
+    title: string;
+    kind: string;
+    ts: string;
+    content: string | null;
+  }> = [];
+  for (const item of all) {
+    const hits = await got.memory.recall(item.title, { topK: 50 });
+    const match = hits.find((h) => h.id === item.id);
+    records.push({
+      id: item.id,
+      title: item.title,
+      kind: item.kind,
+      ts: item.ts,
+      content: match?.content ?? null,
+    });
+  }
+  await (await import("node:fs/promises")).writeFile(
+    path,
+    JSON.stringify({ exportedAt: new Date().toISOString(), records }, null, 2),
+    "utf8",
+  );
+  process.stdout.write(
+    `exported ${records.length} memorie(s) to ${path}\n`,
+  );
+  if (records.some((r) => r.content === null)) {
+    const missing = records.filter((r) => r.content === null).length;
+    process.stderr.write(
+      `warning: ${missing} record(s) had no recoverable content (recall didn't surface them); use 'harness recall' to investigate\n`,
+    );
+  }
+  return 0;
+};
+
 const cmdMemoryRemember = async (args: Args): Promise<number> => {
   // positional[0] is "remember", positional[1..] is the content
   const content = args.positional.slice(1).join(" ");
@@ -667,7 +763,10 @@ const main = async (argv: readonly string[]): Promise<number> => {
     case "audit":
       return withCommandError("audit", () => cmdAudit(args));
     case "recall":
-      return withCommandError("recall", () => cmdRecall(args));
+      return withCommandError("recall", () => cmdRecall(args, "recall"));
+    case "search":
+      // alias for recall — friendlier name surfaced in HELP.
+      return withCommandError("search", () => cmdRecall(args, "search"));
     case "memory":
       switch (args.positional[0]) {
         case "list":
@@ -678,8 +777,14 @@ const main = async (argv: readonly string[]): Promise<number> => {
           return withCommandError("memory remember", () =>
             cmdMemoryRemember(args),
           );
+        case "stats":
+          return withCommandError("memory stats", () => cmdMemoryStats(args));
+        case "export":
+          return withCommandError("memory export", () => cmdMemoryExport(args));
         case undefined:
-          process.stderr.write("usage: harness memory <list|forget|remember>\n");
+          process.stderr.write(
+            "usage: harness memory <list|forget|remember|stats|export>\n",
+          );
           return 64;
         default:
           process.stderr.write(

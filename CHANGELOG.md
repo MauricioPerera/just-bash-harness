@@ -2,6 +2,25 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.6] — 2026-05-05
+
+### Memory CLI surface enrichment
+- **`harness search <query> ...`** — alias for `recall`, surfaced under a more discoverable name. Both go through the same code path; `search` matches user vocabulary, `recall` matches the API.
+- **`--kind <k>` and `--session <id>` filters** added to recall/search. Lets users narrow retrieval to a specific kind (e.g. only "turn" memories) or session.
+- **`harness memory stats`** — prints rootDir, total count, oldest/newest timestamps, breakdown by kind. Quick observability without dumping content.
+- **`harness memory export <path>`** — writes all memories (id, title, kind, ts, content) as JSON. Best-effort: content is recovered via recall-by-title; records that don't surface (e.g. extremely long content the recall walker can't reach) get `content: null` and a warning to stderr.
+
+### CLI HELP updated
+New surface listed in `--help` output, with `recall` documented as an alias.
+
+### Smoke verified
+Created 4 mixed memories (2 fact + 2 turn across 2 sessions); confirmed:
+- `memory stats` → correct counts and date range
+- `search "packaging"` → finds the relevant turn (similarity 0.479)
+- `search --kind fact` → narrows to fact-only matches
+- `search --session sess_A` → narrows to one session
+- `memory export` → 4 records in JSON, all with content recovered
+
 ## [0.1.5] — 2026-05-04
 
 ### Cross-session memory (just-bash-wiki integration)

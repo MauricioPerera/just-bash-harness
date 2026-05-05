@@ -1,6 +1,6 @@
 {
   "name": "just-bash-harness",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Agentic harness on top of just-bash + agent-skills.",
   "license": "MIT",
