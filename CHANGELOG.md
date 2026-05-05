@@ -2,6 +2,16 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.6] — 2026-05-05
+
+### First npm-tag-aligned release
+
+`0.2.5` was the first version pushed to the npm registry, but the publish-prep changes (drop `private: true`, `file:` deps → semver ranges, repo metadata, gitignore `.npmrc`) landed in commit `f72a6b0` *after* the `v0.2.5` git tag at `bbd6da1`. The npm tarball and the git tag therefore didn't reference the same tree.
+
+`0.2.6` exists solely to align tag and tarball: the tag `v0.2.6` is created on the commit that builds the published `0.2.6` tarball. No code or behavior change versus `0.2.5` apart from the version constant in `package.json` + `src/cli.ts`. All 142 unit tests still pass, typecheck clean.
+
+If you installed `just-bash-harness@0.2.5` you don't need to upgrade — the runtime is identical. Future releases will tag-and-publish in the same commit.
+
 ## [0.2.5] — 2026-05-05
 
 ### Cancellation, observability, accuracy — final batch from external review

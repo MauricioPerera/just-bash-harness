@@ -1,6 +1,6 @@
 {
   "name": "just-bash-harness",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Single-agent harness on top of just-bash and the agent-skills ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers (Anthropic + Cloudflare Workers AI), cross-session memory, optional AES-256-GCM at rest.",
   "license": "MIT",
   "author": "Mauricio Perera",
