@@ -2,6 +2,24 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.2.5] — 2026-05-05
+
+### Cancellation, observability, accuracy — final batch from external review
+
+Three review items closed together. None breaks API consumers.
+
+- **#3 — `AbortSignal` propagation reaches the upstream HTTP request.** `Provider.turn()` now accepts an optional second `AbortSignal` argument. `runTurn` forwards `opts.signal` to it. `provider-cloudflare` passes the signal into its `fetch()` init. `provider-anthropic` passes it through `client.messages.stream(params, requestOptions)` alongside the existing `anthropic-beta` header (when `contextWindow1M`). Ctrl+C and signal-driven cancellation now actually close the in-flight LLM request instead of waiting for the stream to drain on its own. Existing provider implementations remain compatible — the parameter is optional.
+- **#5 — Hermes parser failure logging.** `processHermesBuffer` now returns a `parseFailures: string[]` array alongside `textToEmit` / `toolCalls` / `remaining`. Each entry is the raw inner content of a `<tool_call>...</tool_call>` block whose Python-repr payload couldn't be JSON-parsed. The cloudflare provider yields these as `thinking` events with character-count diagnostics, so debugging a malformed Hermes response no longer requires re-running with manual instrumentation. The flush path also emits a thinking event when the stream ends with an unterminated `<tool_call>` tag. Behavior of the happy path (parsed call → emitted as `tool_call` event) is unchanged. Two new unit tests assert `parseFailures` correctness for both the failure and success cases.
+- **#4 — Per-tool-call rationale tracking.** Previously `PendingAction.rationale` for every tool call in a turn was the global `collectedText.join("")`, meaning a tool fired early in the turn would later be audited with rationale text that the LLM produced *after* the call (or about a different call). Now `runTurn` snapshots the accumulated text *at the moment the `tool_call` event arrives* and stores it on the per-call entry; the approval gate sees the rationale that actually preceded the decision to call that tool.
+
+### Tests
+- 142/142 unit tests pass (140 prior + 2 new Hermes parseFailures tests).
+- Typecheck clean.
+- No smoke regression — all existing scripts still pass.
+
+### Acknowledgement
+Closes the remaining items from the v0.2.2 external review (#1 in 0.2.3, #2/#6/#7/#8 in 0.2.4, #3/#4/#5 in 0.2.5). The review is now fully addressed.
+
 ## [0.2.4] — 2026-05-05
 
 ### Cleanups from external review

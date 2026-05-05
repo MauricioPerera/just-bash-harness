@@ -643,6 +643,21 @@ test("hermes buffer: malformed inner content surfaces as raw text (not silently 
   assert.match(out.textToEmit, /<tool_call>/);
 });
 
+test("hermes buffer: parse failure is recorded in parseFailures for diagnostics", () => {
+  const buf = `<tool_call>not a dict at all</tool_call>`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 0);
+  assert.equal(out.parseFailures.length, 1);
+  assert.equal(out.parseFailures[0], "not a dict at all");
+});
+
+test("hermes buffer: parseFailures is empty when all blocks parse OK", () => {
+  const buf = `<tool_call>{'name': 'x', 'arguments': {}}</tool_call>`;
+  const out = processHermesBuffer(buf);
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.parseFailures.length, 0);
+});
+
 test("hermes buffer: bare '<' alone is held back", () => {
   // The lone '<' could be the start of a tag.
   const out = processHermesBuffer("hello <");

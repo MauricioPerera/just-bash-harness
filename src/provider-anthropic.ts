@@ -205,7 +205,7 @@ export const createAnthropicProvider = (
   const useCache = opts.promptCaching !== false;
 
   return {
-    async *turn(input: TurnInput): AsyncIterable<TurnEvent> {
+    async *turn(input: TurnInput, signal?: AbortSignal): AsyncIterable<TurnEvent> {
       // Build a name → full skill id map so we can translate Anthropic's
       // tool_use.name back to our internal SkillId in TurnEvents.
       const nameToId = new Map<string, SkillId>();
@@ -247,9 +247,12 @@ export const createAnthropicProvider = (
           : {}),
       } as unknown as Anthropic.MessageStreamParams;
 
-      const requestOptions = opts.contextWindow1M
-        ? { headers: { "anthropic-beta": "context-1m-2025-08-07" } }
-        : undefined;
+      const requestOptions: { headers?: Record<string, string>; signal?: AbortSignal } = {
+        ...(opts.contextWindow1M
+          ? { headers: { "anthropic-beta": "context-1m-2025-08-07" } }
+          : {}),
+        ...(signal !== undefined ? { signal } : {}),
+      };
 
       let stream;
       try {

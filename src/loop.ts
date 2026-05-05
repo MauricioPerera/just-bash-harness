@@ -172,9 +172,18 @@ export const runTurn = async (
     pendingResults = undefined;
 
     let stop: StopReason = "error";
-    const calls: { id: string; skill: string; args: unknown }[] = [];
+    const calls: {
+      id: string;
+      skill: string;
+      args: unknown;
+      /** Text accumulated up to the moment this tool_call event arrived.
+       *  Captured per-call so each PendingAction.rationale reflects what the
+       *  LLM said *before* deciding to invoke that specific tool, not the
+       *  full text including narration that came after later tool calls. */
+      rationale: string;
+    }[] = [];
 
-    for await (const event of deps.provider.turn(input)) {
+    for await (const event of deps.provider.turn(input, opts.signal)) {
       if (opts.signal?.aborted) {
         stop = "cancelled";
         break;
@@ -190,7 +199,12 @@ export const runTurn = async (
           opts.handlers?.onThinking?.(evt.delta);
           break;
         case "tool_call":
-          calls.push({ id: evt.id, skill: evt.skill, args: evt.args });
+          calls.push({
+            id: evt.id,
+            skill: evt.skill,
+            args: evt.args,
+            rationale: collectedText.join("").trim().slice(0, 500),
+          });
           opts.handlers?.onToolCall?.(evt.id, evt.skill);
           break;
         case "stop":
@@ -265,7 +279,7 @@ export const runTurn = async (
         skillId: resolved.id,
         category: derived.category,
         args: (call.args as Record<string, unknown>) ?? {},
-        rationale: collectedText.join("").trim().slice(0, 500),
+        rationale: call.rationale,
         derivedFrom: derived.derivedFrom,
       };
 

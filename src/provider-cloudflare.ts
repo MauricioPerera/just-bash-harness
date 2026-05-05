@@ -231,12 +231,14 @@ interface BufferProcessOutput {
   textToEmit: string;        // content safe to yield as `text` deltas
   toolCalls: HermesToolCall[]; // complete <tool_call> blocks parsed out
   remaining: string;          // partial tag tail to keep in buffer
+  parseFailures: string[];    // raw inner content of <tool_call> blocks that failed to parse
 }
 
 /** Process a content buffer, splitting it into safe-to-emit text, fully-
  *  closed <tool_call> blocks, and a tail that may be a partial tag. */
 const processHermesBuffer = (buffer: string): BufferProcessOutput => {
   const toolCalls: HermesToolCall[] = [];
+  const parseFailures: string[] = [];
   const textParts: string[] = [];
   let remaining = buffer;
 
@@ -253,7 +255,7 @@ const processHermesBuffer = (buffer: string): BufferProcessOutput => {
       // Open without close — wait for more content. Keep from openIdx onward.
       remaining = remaining.slice(openIdx);
       // Return now; the partial open is in `remaining`.
-      return { textToEmit: textParts.join(""), toolCalls, remaining };
+      return { textToEmit: textParts.join(""), toolCalls, remaining, parseFailures };
     }
 
     const inner = afterOpen.slice(0, closeIdx);
@@ -262,8 +264,10 @@ const processHermesBuffer = (buffer: string): BufferProcessOutput => {
       toolCalls.push(parsed);
     } else {
       // Couldn't parse — surface the raw markup as text so the failure is
-      // at least visible, rather than silently dropping the call.
+      // at least visible, AND record the inner content so the caller can
+      // emit a diagnostic (thinking) event for debugging.
       textParts.push(`${TAG_OPEN}${inner}${TAG_CLOSE}`);
+      parseFailures.push(inner);
     }
     remaining = afterOpen.slice(closeIdx + TAG_CLOSE.length);
   }
@@ -282,12 +286,13 @@ const processHermesBuffer = (buffer: string): BufferProcessOutput => {
         textToEmit: textParts.join(""),
         toolCalls,
         remaining: suffix,
+        parseFailures,
       };
     }
   }
 
   textParts.push(remaining);
-  return { textToEmit: textParts.join(""), toolCalls, remaining: "" };
+  return { textToEmit: textParts.join(""), toolCalls, remaining: "", parseFailures };
 };
 
 // Exported for unit tests.
@@ -307,7 +312,7 @@ export const createCloudflareProvider = (
   const fetchImpl = opts.fetchFn ?? globalThis.fetch;
 
   return {
-    async *turn(input: TurnInput): AsyncIterable<TurnEvent> {
+    async *turn(input: TurnInput, signal?: AbortSignal): AsyncIterable<TurnEvent> {
       const nameToId = new Map<string, SkillId>();
       for (const s of input.availableTools) nameToId.set(s.shortId, s.id);
 
@@ -334,6 +339,10 @@ export const createCloudflareProvider = (
             Accept: "text/event-stream",
           },
           body: JSON.stringify(body),
+          // Propagate abort so Ctrl+C in the harness actually closes the
+          // upstream HTTP request instead of letting it drain. Browsers
+          // and Node 22 both honor this through to the underlying socket.
+          ...(signal !== undefined ? { signal } : {}),
         });
       } catch (err) {
         yield { type: "stop", reason: "error" };
@@ -424,6 +433,12 @@ export const createCloudflareProvider = (
               if (out.textToEmit.length > 0) {
                 yield { type: "text", delta: out.textToEmit };
               }
+              for (const raw of out.parseFailures) {
+                yield {
+                  type: "thinking",
+                  delta: `[hermes parser: failed to parse <tool_call> payload (${raw.length} chars); raw markup surfaced as text]\n`,
+                };
+              }
               yield* emitHermesToolCalls(out.toolCalls);
             }
             if (delta?.reasoning) {
@@ -461,10 +476,21 @@ export const createCloudflareProvider = (
           if (tail.textToEmit.length > 0) {
             yield { type: "text", delta: tail.textToEmit };
           }
+          for (const raw of tail.parseFailures) {
+            yield {
+              type: "thinking",
+              delta: `[hermes parser: failed to parse <tool_call> payload (${raw.length} chars); raw markup surfaced as text]\n`,
+            };
+          }
           yield* emitHermesToolCalls(tail.toolCalls);
           if (tail.remaining.length > 0) {
-            // Unterminated <tool_call> — emit as text so the user sees it.
+            // Unterminated <tool_call> — emit as text so the user sees it,
+            // and report it as a parse failure for visibility.
             yield { type: "text", delta: tail.remaining };
+            yield {
+              type: "thinking",
+              delta: `[hermes parser: stream ended with unterminated <tool_call> tag (${tail.remaining.length} chars)]\n`,
+            };
           }
         }
 

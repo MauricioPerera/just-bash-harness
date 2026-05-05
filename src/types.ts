@@ -103,7 +103,14 @@ export type TurnEvent =
   | { type: "stop"; reason: StopReason };
 
 export interface Provider {
-  turn(input: TurnInput): AsyncIterable<TurnEvent>;
+  /**
+   * Drive one provider round. The optional AbortSignal lets the loop
+   * cancel the in-flight LLM request — e.g. on Ctrl+C — without waiting
+   * for the stream to drain on its own. Implementations SHOULD pass it
+   * to their underlying fetch / SDK so cancellation is real, not just
+   * cooperative-at-event-boundary.
+   */
+  turn(input: TurnInput, signal?: AbortSignal): AsyncIterable<TurnEvent>;
 }
 
 // ─── approval ───────────────────────────────────────────────────────────────
