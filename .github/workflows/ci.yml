@@ -16,16 +16,19 @@ jobs:
   ci:
     name: typecheck + test + build + smokes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      # The harness depends on `@rckflr/agent-skills-cli` via `file:../agent-skills-cli`.
-      # In CI we check out main of that repo as a sibling and build its dist
-      # before installing the harness. This catches integration breakage early.
+      # The harness depends on two file:../ siblings that npm resolves at
+      # install time:
+      #   - @rckflr/agent-skills-cli  → file:../agent-skills-cli
+      #   - just-bash-wiki            → file:../just-bash-wiki
       #
-      # `just-bash-data` and `just-bash` come in transitively from
-      # agent-skills-cli's published deps (or its own `file:` deps in dev),
-      # so we don't check them out here.
+      # In CI we check out both at main and build their dists before
+      # installing the harness. Catches integration breakage early.
+      #
+      # just-bash and just-bash-data come transitively via npm (published
+      # versions are pulled by the siblings' own deps), so no need to clone.
 
       - name: Checkout harness
         uses: actions/checkout@v4
@@ -39,6 +42,13 @@ jobs:
           path: agent-skills-cli
           ref: main
 
+      - name: Checkout just-bash-wiki (sibling)
+        uses: actions/checkout@v4
+        with:
+          repository: MauricioPerera/just-bash-wiki
+          path: just-bash-wiki
+          ref: main
+
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
@@ -47,9 +57,16 @@ jobs:
           cache-dependency-path: |
             just-bash-harness/package-lock.json
             agent-skills-cli/package-lock.json
+            just-bash-wiki/package-lock.json
 
       - name: Build agent-skills-cli sibling
         working-directory: agent-skills-cli
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build just-bash-wiki sibling
+        working-directory: just-bash-wiki
         run: |
           npm ci
           npm run build
@@ -88,3 +105,23 @@ jobs:
       - name: Smoke — full loop with replayed Gemma decisions
         working-directory: just-bash-harness
         run: npm run smoke:cf-driven
+
+      - name: Smoke — cross-session memory (wiki integration)
+        working-directory: just-bash-harness
+        run: npx tsx scratch/live-test-memory.ts
+
+      - name: Smoke — compaction
+        working-directory: just-bash-harness
+        run: npx tsx scratch/live-test-compaction.ts
+
+      - name: Smoke — encryption (AES-256-GCM at rest)
+        working-directory: just-bash-harness
+        run: npx tsx scratch/live-test-encryption.ts
+
+      - name: Smoke — chains (multi-skill orchestration)
+        working-directory: just-bash-harness
+        run: npx tsx scratch/live-test-chains.ts
+
+      - name: Smoke — Hermes <tool_call> tag parser
+        working-directory: just-bash-harness
+        run: npx tsx scratch/live-test-hermes.ts
