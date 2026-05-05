@@ -2,6 +2,32 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.8] — 2026-05-05
+
+### AES-256-GCM at rest for sessions + memory
+
+`just-bash-data` already supports encryption at rest; the harness now exposes it as a single, opt-in flag.
+
+### Policy
+- New `policy.encryption: { enabled, saltMemory?, saltSession? }`. Default `enabled: false`. Salts are optional namespacing for the underlying PBKDF2 derivation in just-bash-data.
+- The key itself is read from **`HARNESS_ENCRYPTION_KEY` env var** — NEVER stored in policy YAML or on disk. When `enabled: true` and the env var is missing, the harness throws at construction with a clear message.
+
+### Wiring
+- `SessionStoreOpts` gains `encryptionKey?` and `encryptionSalt?`, forwarded to `createBankBash` for every session bank instance.
+- `MemoryStoreOpts` gains the same, forwarded to `createWikiPlugin` for the memory bank instance.
+- CLI helper `buildSessionStore(policy)` consolidates the four call sites that constructed session stores; reads + propagates the key.
+- CLI's `buildMemoryIfEnabled` likewise propagates the key + salt to memory.
+
+### Smoke (`scratch/live-test-encryption.ts`)
+- Wrote a known-secret memory with key A → grep'd every file under the memory dir; **secret not found verbatim** (encryption confirmed at the bytes level).
+- Reloaded with key A → recall surfaces the original content exactly.
+- Reloaded with a different key → recall returns nothing or throws (no plaintext leak).
+- Control: unencrypted store with the same data shows the secret IS findable on disk (encryption is the only thing protecting it).
+- 4/4 checks PASS.
+
+### Caveat documented
+Encryption is a **one-time decision per bank dir**. Changing the key (or salt) on an existing bank effectively re-keys it — old data becomes unreadable. The key (and salt) need to remain stable for the life of the bank. Back them up.
+
 ## [0.1.7] — 2026-05-05
 
 ### Compaction (lifts the maxTurns ceiling)

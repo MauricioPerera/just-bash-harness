@@ -28,6 +28,14 @@ export interface SessionStoreOpts {
   sessionsRoot: string;
   /** Inject a policy resolver. The store needs the policy at create() time. */
   loadPolicy: (path: string) => Promise<Policy>;
+  /**
+   * Optional encryption — passed through to createBankBash → just-bash-data
+   * for AES-256-GCM at rest. The CLI reads this from
+   * `process.env.HARNESS_ENCRYPTION_KEY` when policy.encryption.enabled
+   * and forwards it here. Salt is optional namespacing.
+   */
+  encryptionKey?: string;
+  encryptionSalt?: string;
 }
 
 const SESSIONS_COLL = "sessions";
@@ -64,7 +72,13 @@ export const createSessionStore = (opts: SessionStoreOpts): SessionStore => {
   const bashFor = (id: SessionId): BashInstance => {
     const existing = bashes.get(id);
     if (existing) return existing;
-    const fresh = createBankBash({ bankDir: sessionDir(opts.sessionsRoot, id) });
+    const fresh = createBankBash({
+      bankDir: sessionDir(opts.sessionsRoot, id),
+      ...(opts.encryptionKey !== undefined
+        ? { encryptionKey: opts.encryptionKey }
+        : {}),
+      ...(opts.encryptionSalt !== undefined ? { salt: opts.encryptionSalt } : {}),
+    });
     bashes.set(id, fresh);
     return fresh;
   };

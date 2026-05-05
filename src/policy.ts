@@ -48,6 +48,9 @@ export const DEFAULT_POLICY: Policy = {
     persist: { autoPersistTurns: true, minMessageLength: 20 },
     compaction: { enabled: false, windowSize: 50 },
   },
+  encryption: {
+    enabled: false,
+  },
 };
 
 export const loadPolicy = async (path: string): Promise<Policy> => {
@@ -181,6 +184,21 @@ const mergeWithDefaults = (input: unknown): Policy => {
     },
   };
 
+  // encryption
+  const encIn = isObject(input.encryption) ? input.encryption : {};
+  const encryption: Policy["encryption"] = {
+    enabled:
+      typeof encIn.enabled === "boolean"
+        ? encIn.enabled
+        : DEFAULT_POLICY.encryption.enabled,
+    ...(typeof encIn.saltMemory === "string"
+      ? { saltMemory: encIn.saltMemory }
+      : {}),
+    ...(typeof encIn.saltSession === "string"
+      ? { saltSession: encIn.saltSession }
+      : {}),
+  };
+
   return {
     version: 1,
     skills: { subscribed, overrides },
@@ -189,5 +207,6 @@ const mergeWithDefaults = (input: unknown): Policy => {
     limits,
     paths,
     memory,
+    encryption,
   };
 };

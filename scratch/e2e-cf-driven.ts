@@ -139,6 +139,7 @@ const main = async (): Promise<void> => {
         persist: { autoPersistTurns: false, minMessageLength: 20 },
         compaction: { enabled: false, windowSize: 50 },
       },
+      encryption: { enabled: false },
     };
 
     const sessionStore = createSessionStore({

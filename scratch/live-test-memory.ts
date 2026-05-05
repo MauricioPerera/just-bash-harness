@@ -94,6 +94,7 @@ const setupShared = async (): Promise<Setup> => {
       persist: { autoPersistTurns: true, minMessageLength: 5 },
       compaction: { enabled: false, windowSize: 50 },
     },
+    encryption: { enabled: false },
   };
 
   const memory = createMemoryStore({

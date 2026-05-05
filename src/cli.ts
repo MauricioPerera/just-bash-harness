@@ -34,7 +34,7 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.7";
+const HARNESS_VERSION = "0.1.8";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
@@ -72,6 +72,8 @@ Other env vars:
   HARNESS_POLICY            default policy path; --policy overrides
   HARNESS_DEFAULT_MODEL     override default model name
   CF_LLM_MODEL              override Cloudflare LLM model
+  HARNESS_ENCRYPTION_KEY    AES-256-GCM key for sessions + memory at rest
+                            (required when policy.encryption.enabled: true)
 
 Examples:
   # Bootstrap with default policy and one turn
@@ -146,16 +148,53 @@ const ensureSessionsRoot = async (policy: Policy): Promise<string> => {
   return dir;
 };
 
+/** Construct a SessionStore from policy, forwarding encryption when enabled.
+ *  The four cli subcommands that use sessions all share this code path. */
+const buildSessionStore = (policy: Policy): ReturnType<typeof createSessionStore> => {
+  const key = resolveEncryptionKey(policy);
+  return createSessionStore({
+    sessionsRoot: policy.paths.sessionsRoot,
+    loadPolicy: () => Promise.resolve(policy),
+    ...(key !== undefined ? { encryptionKey: key } : {}),
+    ...(policy.encryption.saltSession !== undefined
+      ? { encryptionSalt: policy.encryption.saltSession }
+      : {}),
+  });
+};
+
+/** Resolve the encryption key from env when policy.encryption.enabled.
+ *  Throws if enabled and the env var is missing. Returns undefined when
+ *  encryption is off. */
+const resolveEncryptionKey = (policy: Policy): string | undefined => {
+  if (!policy.encryption.enabled) return undefined;
+  const key = process.env["HARNESS_ENCRYPTION_KEY"];
+  if (typeof key !== "string" || key.length === 0) {
+    throw new Error(
+      "policy.encryption.enabled = true but HARNESS_ENCRYPTION_KEY env var is not set. " +
+      "Set it before invoking the harness, or set policy.encryption.enabled = false.",
+    );
+  }
+  return key;
+};
+
 /** Construct a Memory dep when policy.memory.enabled. Re-uses the embedder
  *  the harness picked for retrieval so memory + skill recall vectors stay
- *  in the same model space. */
+ *  in the same model space. Forwards encryption key+salt when enabled. */
 const buildMemoryIfEnabled = async (
   policy: Policy,
   embedder: EmbeddingProvider,
 ): Promise<Memory | undefined> => {
   if (!policy.memory.enabled) return undefined;
   await mkdir(policy.memory.rootDir, { recursive: true });
-  return createMemoryStore({ rootDir: policy.memory.rootDir, embedder });
+  const key = resolveEncryptionKey(policy);
+  return createMemoryStore({
+    rootDir: policy.memory.rootDir,
+    embedder,
+    ...(key !== undefined ? { encryptionKey: key } : {}),
+    ...(policy.encryption.saltMemory !== undefined
+      ? { encryptionSalt: policy.encryption.saltMemory }
+      : {}),
+  });
 };
 
 /** Wrap a subcommand so that domain errors print as `harness <cmd>: <msg>`
@@ -186,10 +225,7 @@ const cmdNew = async (args: Args): Promise<number> => {
   const policy = await loadPolicyOrDefault(policyPath);
 
   const sessionsRoot = await ensureSessionsRoot(policy);
-  const sessionStore = createSessionStore({
-    sessionsRoot,
-    loadPolicy: () => Promise.resolve(policy),
-  });
+  const sessionStore = buildSessionStore(policy);
 
   const id = await sessionStore.create({
     policyPath: policyPath ?? "<default>",
@@ -233,10 +269,7 @@ const cmdChat = async (args: Args): Promise<number> => {
   const bank = await ensureBank(policy, embedder);
   const sessionsRoot = await ensureSessionsRoot(policy);
 
-  const sessionStore = createSessionStore({
-    sessionsRoot,
-    loadPolicy: () => Promise.resolve(policy),
-  });
+  const sessionStore = buildSessionStore(policy);
 
   const toolbox = createToolbox({ bank, embedder });
   const approval = createApprovalGate({
@@ -401,10 +434,7 @@ const cmdResume = async (args: Args): Promise<number> => {
   const policyPath = resolvePolicyPath(args.flags);
   const policy = await loadPolicyOrDefault(policyPath);
   const sessionsRoot = await ensureSessionsRoot(policy);
-  const sessionStore = createSessionStore({
-    sessionsRoot,
-    loadPolicy: () => Promise.resolve(policy),
-  });
+  const sessionStore = buildSessionStore(policy);
 
   const session = await sessionStore.resume(sessionId);
   process.stdout.write(`session ${session.id}\n`);
@@ -464,10 +494,7 @@ const cmdAudit = async (args: Args): Promise<number> => {
   const sessionsRoot = await ensureSessionsRoot(policy);
   const embedder = resolveEmbedderOrStub();
   const bank = await ensureBank(policy, embedder);
-  const sessionStore = createSessionStore({
-    sessionsRoot,
-    loadPolicy: () => Promise.resolve(policy),
-  });
+  const sessionStore = buildSessionStore(policy);
 
   const session = await sessionStore.load(sessionId);
 

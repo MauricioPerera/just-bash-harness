@@ -78,6 +78,14 @@ export interface MemoryStoreOpts {
   rootDir: string;
   /** Used for both write-time and recall-time vectorization. */
   embedder: EmbeddingProvider;
+  /**
+   * Optional AES-256-GCM at rest, forwarded to createWikiPlugin →
+   * just-bash-data. The CLI reads the key from
+   * `process.env.HARNESS_ENCRYPTION_KEY` when policy.encryption.enabled.
+   * Salt is optional namespacing.
+   */
+  encryptionKey?: string;
+  encryptionSalt?: string;
 }
 
 const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
@@ -102,6 +110,12 @@ export const createMemoryStore = (opts: MemoryStoreOpts): Memory => {
       customCommands: createWikiPlugin({
         rootDir: "/",
         embeddingDim: opts.embedder.dim,
+        ...(opts.encryptionKey !== undefined
+          ? { encryptionKey: opts.encryptionKey }
+          : {}),
+        ...(opts.encryptionSalt !== undefined
+          ? { salt: opts.encryptionSalt }
+          : {}),
       }),
     });
     if (initPromise === null) {

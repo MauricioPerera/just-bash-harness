@@ -203,6 +203,22 @@ export interface Policy {
     sessionsRoot: string;
     auditLogPath?: string;     // optional override; default uses bank's audit
   };
+  /**
+   * AES-256-GCM at rest for session storage + memory bank. The key itself
+   * is read from the `HARNESS_ENCRYPTION_KEY` env var (NEVER stored in
+   * policy or on disk). When `enabled: true` and the env var is missing,
+   * the harness throws at construction time with a clear message.
+   *
+   * NOTE: Encryption is a one-time decision per bank dir. Changing the
+   * key (or salt) on an existing bank effectively re-keys it — existing
+   * data becomes unreadable. Pick a key once per scope and back it up.
+   */
+  encryption: {
+    enabled: boolean;
+    /** Optional salt namespacing. just-bash-data uses defaults if absent. */
+    saltMemory?: string;
+    saltSession?: string;
+  };
   /** Memory layer (just-bash-wiki backed). Opt-in. */
   memory: {
     /** Master switch. When false, no memory dep is constructed. */

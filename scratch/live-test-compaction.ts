@@ -79,6 +79,7 @@ const buildPolicy = (
     persist: { autoPersistTurns: true, minMessageLength: 1 },
     compaction,
   },
+  encryption: { enabled: false },
 });
 
 // ─── main ────────────────────────────────────────────────────────────────

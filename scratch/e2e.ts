@@ -77,6 +77,7 @@ const buildPolicy = (overrides: Partial<Policy> = {}): Policy => ({
     persist: { autoPersistTurns: false, minMessageLength: 20 },
     compaction: { enabled: false, windowSize: 50 },
   },
+  encryption: { enabled: false },
   ...overrides,
 });
 
