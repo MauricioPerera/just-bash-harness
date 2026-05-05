@@ -33,7 +33,7 @@ import { parseArgs, type Args } from "./cli-args.js";
 import type { Policy, SessionId } from "./types.js";
 
 // Bumped in lockstep with package.json on each release.
-const HARNESS_VERSION = "0.1.3";
+const HARNESS_VERSION = "0.1.4";
 
 const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
@@ -43,7 +43,7 @@ Usage:
   harness resume <sessionId>
   harness sessions
   harness audit <sessionId> [--limit N]
-  harness skills list
+  harness skills list [--all]
   harness skills add <pack@version>
   harness version
 
@@ -295,22 +295,41 @@ const cmdChat = async (args: Args): Promise<number> => {
 };
 
 const cmdSkillsList = async (args: Args): Promise<number> => {
+  const showAll = args.flags.get("all") === true;
   const policyPath = resolvePolicyPath(args.flags);
   const policy = await loadPolicyOrDefault(policyPath);
   const embedder = resolveEmbedderOrStub();
   const bank = await ensureBank(policy, embedder);
 
-  const skills = await bank.listSkills();
-  if (skills.length === 0) {
-    process.stderr.write("no skills subscribed. Use 'harness skills add <pack@version>'.\n");
+  // Source of truth for "what's subscribed" is the bank.
+  const subscribed = await bank.listSkills();
+  if (subscribed.length === 0) {
+    process.stderr.write(
+      "no skills subscribed. Use 'harness skills add <pack@version>'.\n",
+    );
     return 0;
   }
-  for (const s of skills) {
+
+  // Apply applicable_when filter unless --all is passed. Cheap host probe;
+  // re-uses the same logic the loop will apply at chat time.
+  const toolbox = createToolbox({ bank, embedder, filterApplicable: !showAll });
+  const visible = await toolbox.list();
+  const visibleIds = new Set(visible.map((s) => s.id));
+
+  for (const s of subscribed) {
+    const filteredOut = !showAll && !visibleIds.has(s.identity);
+    if (filteredOut) continue;
     process.stdout.write(`${s.identity}\n`);
     process.stdout.write(`  title:     ${s.title}\n`);
     process.stdout.write(`  use_when:  ${s.use_when}\n`);
     process.stdout.write(`  signature: ${s.provenance.signature_status ?? "unsigned"}\n`);
     process.stdout.write("\n");
+  }
+
+  if (!showAll && visible.length < subscribed.length) {
+    process.stderr.write(
+      `# ${subscribed.length - visible.length} skill(s) hidden by applicable_when filter — pass --all to see them\n`,
+    );
   }
   return 0;
 };

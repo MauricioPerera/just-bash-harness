@@ -2,6 +2,24 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [0.1.4] — 2026-05-04
+
+### `applicable_when` filter (spec §2.7)
+- **`Toolbox.list()` and `Toolbox.resolve()` now apply the spec's `applicable_when` filter** against the host context. Skills declaring `os` / `arch` / `shell_commands_present` / `env_present` / `env_absent` are dropped from the catalog when the host doesn't satisfy them.
+- Host context detected lazily on first list/resolve: `detectHost()` (os, arch, env keys) augmented with `detectAvailableCommands(union of subscribed skills' required commands)`.
+- New `ToolboxOpts.filterApplicable: boolean` (default `true`) — set false to expose ALL subscribed skills regardless of host fitness.
+- New `ToolboxOpts.hostContext?: HostContext` for test injection / explicit override.
+
+### CLI
+- **`harness skills list [--all]`** — by default shows only skills applicable to the current host. `--all` shows everything in the bank. When something was filtered out, stderr prints `# N skill(s) hidden by applicable_when filter — pass --all to see them`.
+
+### Tests
+- 9 new unit tests in `src/toolbox.test.ts` covering OS / shell command / env_present / env_absent / no-constraints / filter-disabled / mixed-catalog cases. Total: **109/109**.
+- Verified end-to-end against `agent-skills-pack@v2.2.0`: on a Windows host without `rg`, `ripgrep-search` (which declares `applicable_when.shell_commands_present: ["rg"]`) is correctly hidden — 6 visible, 7 with `--all`.
+
+### Why this matters
+Without this, the LLM could pick a skill that's guaranteed to fail at exec time (e.g., calling `gh` when the GitHub CLI isn't installed). The harness now hides those skills before they reach the model, eliminating a class of unnecessary tool-call failures.
+
 ## [0.1.3] — 2026-05-04
 
 ### CLI polish

@@ -1,0 +1,25 @@
+version: 1
+
+paths:
+  sessionsRoot: C:\Users\Rckflr\.harness\sessions
+  skillsBankDir: C:\Users\Rckflr\.harness\skills-bank-live
+
+# Live test against agent-skills-pack which doesn't have signed tags yet.
+# In production this should be true.
+signature:
+  require_signed: false
+
+approval:
+  matrix:
+    prohibited: deny
+    explicit: ask
+    regular: allow
+
+limits:
+  maxTurns: 50
+  maxToolCallsPerTurn: 10
+  maxWallclockMs: 600000
+
+skills:
+  subscribed: []
+  overrides: {}
