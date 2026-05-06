@@ -140,6 +140,7 @@ The user has approved (and explicitly invited) extensive iterative work via "ade
 - No web UI. CLI / TTY / REPL only. CHANGELOG `0.2.0` discusses this explicitly.
 - No live Anthropic LLM smoke (deliberate — Anthropic SDK has its own tests). See `TESTING.md` "Live LLM smoke asymmetry" for the rationale.
 - No `harness rekey --cleanup-backups` command yet. Backup directories accumulate after rekey; cleanup is the user's job per current docs. Tracked in issue #15.
+- No skills bank encryption. Decided 2026-05-06 (Path B in `CONTRACT-skills-bank-encryption.md`, GitHub issue #26): the asymmetry where sessions + memory are AES-256-GCM at rest but the skills bank is not is a deliberate design choice with explicit threat-model rationale, not an oversight. See DESIGN §4.4 "Why the skills bank stays plaintext", README "Trade-offs that landed but still have caveats", and LESSONS doctrine #6 sub-clause B Case C. Revisitable if a real consumer with stricter threat model (multi-user host, shared CI) appears.
 - No formal v1 roadmap. CHANGELOG references "promote `createBankBash` to STABLE before v1.0" but nothing else is enumerated as v1-blocking.
 
 ## Open issues (post-v0.3.0)
@@ -168,5 +169,13 @@ Enhancements:
 - **Issue #14** — Bash instance lifecycle in long-running REPL sessions.
 - **Issue #15** — `harness rekey --cleanup-backups`.
 - **Issue #16** — Document encryption key silent-change failure mode in DESIGN §4.4.
+
+Roadmap-driven contracts (post-v0.3.0, tracked in `D:/repos/ailibro/CONTRACT-*.md` + GitHub issues #17–#26):
+
+- **Issue #17–#22** — READY (or READY-pending-pre-flight) implementation contracts spanning provider plumbing, retrieval bench shape, signed-skills-only mode, observability metrics, packaging polish, and CI sibling-build investigation. Pick by the `Pre-flight` block at the top of each contract.
+- **Issue #23** — Suggester pattern blacklist. **READY for Phase 1** (decided 2026-05-06: Option 1 + Option 3 hybrid — pattern-based filter ships now, frontmatter `destructive: true` field follows in Phase 2). See `CONTRACT-suggester-blacklist.md`.
+- **Issue #24** — MCP provider adapter. **DEFERRED** until at least one curated skills pack ships, per maintainer prioritization 2026-05-06.
+- **Issue #25** — `harness rekey` lockfile + atomic move. **DEFERRED** to the implementation window; decision is straightforward but doesn't block the agentic flow today.
+- **Issue #26** — Skills bank encryption. **DECIDED 2026-05-06 — Path B** (documentation-only). See entry in "What's deliberately NOT done" above.
 
 When you pick an issue from this list to work on, the file path + line number references in each issue body should give you the exact starting point. The LESSONS.md doctrines apply to any fix — particularly #2 (enumerate invariants touched in changelog), #6 (grep DESIGN/README/CHANGELOG/CLAUDE.md after the fix), and #4 (avoid creating new duplicate facts).

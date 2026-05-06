@@ -353,6 +353,18 @@ Three banks exist; encryption coverage is **not** uniform:
 
 The asymmetry is a consequence of `FileBank` (skills) being a different code path from `createBankBash` (sessions + memory). A user who enables encryption expecting "everything at rest" should be aware that the skills bank — including the `approval_stats` collection added in v0.3.0 — is NOT covered. If/when the skills bank ever takes a key, `harness rekey --target skills` is already wired (see §4.5) to migrate `approval_stats` along with anything else stored there.
 
+#### Why the skills bank stays plaintext (deliberate, with caveats)
+
+Decision recorded 2026-05-06: the asymmetry is **deliberate and permanent** for the foreseeable future, not a gap awaiting closure. The threat-model rationale:
+
+- An attacker with read access to the skills bank dir (`~/.config/agent-skills/` typical path) typically also has access to the skill source code stored there. The source code leaks far more than `approval_stats` does. Encrypting `approval_stats` while leaving the skill code in plaintext does not reduce the attack surface in proportion to the implementation cost.
+- The same local-attacker access usually reaches `HARNESS_ENCRYPTION_KEY` itself, since env vars are inherited by user-level processes and readable via `/proc/<pid>/environ` to the same UID. Encryption that depends on a key the attacker can also read is theater, not protection.
+- Extending FileBank to accept a key requires upstream coordination with `agent-skills-cli`, plus a one-time migration for every existing skills bank. The work is not blocked technically but is not justified by the current threat model.
+
+**The known limitation we accept**: `approval_stats` is **behavioral data** — it reveals which skills the user approves, how often, when they say deny. In a narrow threat model where an attacker has read access to the skills bank but NOT to the skill source code or session content (e.g. shared-host scenarios with per-user dir isolation that a co-user can bypass through a separate vector), this leaks operational patterns. We acknowledge this and accept it. The asymmetry is named here so anyone evaluating the harness for that threat model can decide whether to mitigate externally (e.g. file-system-level encryption of the skills dir at the OS layer, separate from `policy.encryption.enabled`).
+
+**Future revisitation criterion**: if a real consumer of `FileBank` appears with a stricter threat model (e.g. multi-user host where users genuinely should not see each other's behavioral data, or a shared CI environment with tenant isolation requirements), the decision is revisited and Path A (extend FileBank to accept a key) becomes the upgrade. Until that signal exists, Path A is speculative work and is not on the roadmap. See `CONTRACT-skills-bank-encryption.md` (in the strategy repo) for the full decision record.
+
 #### One-way decision (without the rekey command)
 
 Per CHANGELOG `0.1.8`: changing the key (or salt) on an existing bank effectively re-keys it — existing data becomes unreadable. Pick a key once per scope and back it up, OR use `harness rekey` (§4.5) to migrate explicitly.

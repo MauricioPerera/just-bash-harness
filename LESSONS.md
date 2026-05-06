@@ -443,6 +443,23 @@ The case for paying that hour:
   the binary on PATH is `harness`"* — and every example invocation
   uses `harness <subcommand>`, never the package name.
 
+  *Case C — Encryption coverage assumed symmetric across banks.*
+  When `policy.encryption.enabled: true`, sessions and memory are
+  AES-256-GCM encrypted, but the skills bank stays plaintext (see
+  DESIGN §4.4). The asymmetry is deliberate (decision recorded
+  2026-05-06: "Why the skills bank stays plaintext" subsection in
+  §4.4), but evaluators reading "encryption at rest" in the README
+  banner naturally assume uniform coverage. Risk: a user enables
+  encryption for session content protection, then is surprised to
+  learn `db approval_stats` (behavioral counters in the skills
+  bank) is still on disk in plaintext. Fix: README "Trade-offs
+  that landed but still have caveats" section explicitly names
+  this asymmetry as a deliberate trade-off with threat-model
+  rationale. The rationale is honest about what's accepted as a
+  known limitation (behavioral leakage in narrow shared-host
+  scenarios) versus what's traded off for cost (extending
+  FileBank cross-repo).
+
   The general rule: **structural symmetry plus operational
   asymmetry requires explicit deliberateness statements**, or
   rendering tools will paper over the gap. This applies not only
@@ -452,6 +469,13 @@ The case for paying that hour:
   often-but-not-always identical. Whenever they're not identical,
   state the asymmetry once at the canonical install/invocation
   point and use the correct form everywhere else in prose.
+
+  When the asymmetry is a **deliberate trade-off** (Case C above)
+  rather than a convention mismatch (Cases A and B), the prose
+  must include the threat-model or design rationale, not just the
+  fact of the asymmetry. Otherwise readers assume "asymmetry =
+  bug awaiting closure" rather than "asymmetry = considered
+  decision with documented limits".
 
 - **Prose with locally-correct but globally-ambiguous
   terminology.** A single phrase or metaphor can be technically
