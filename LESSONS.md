@@ -306,6 +306,137 @@ exists, so it gets codified now, not at "the next release."
 
 ---
 
+## 6. Documentation drift is invisible to internal review; only external rendering exposes it
+
+**Origin: post-0.3.0 audit session — seven cases of stale documentation
+detected within ~3 hours, all attributable to the same anti-pattern
+and none caught by prior internal review.**
+
+NotebookLM (a generic doc-to-diagram tool) was run against the repo on
+2026-05-05 to produce architectural visualizations for documentation
+purposes. Each diagram it produced revealed a distinct case where the
+canonical documentation had drifted from the actual code. The diagrams
+were not wrong — they were faithful to the prose they read. The prose
+itself was stale.
+
+| # | Doc location | Drift | Fix commit |
+|---|---|---|---|
+| 1 | `README.md` "Architecture in one diagram" | ~v0.1.4 vintage; missed memory layer (added v0.1.5), approval_stats (v0.3.0), redact step in pipeline (v0.3.0); listed approval as one label among four "cross-cutting" rather than discrete node; "just-bash + just-bash-data" presented as peers eliding that one runs on top of the other | `11ee068` |
+| 2 | `CHANGELOG.md` v0.3.0 rekey bullet | `--target sessions\|memory\|all` listed; the actual list extended to include `skills` in the same-day post-publish commit, but the bullet was not updated | `84c5f38` |
+| 3 | `DESIGN.md` §4 turn protocol | Approval gate buried as sub-steps `3.b–3.f` of a "for each tool_call" block — technically correct but visually invisible to a reader treating the section as a flow; missing memory recall, compaction (slice + summary), per-call rationale, redact pass, chain step union, approval_stats write | `fbc2258` |
+| 4 | `DESIGN.md` §4.2 compaction | `**TBD.** v0: hard cap turns. Post-v0 candidates...` — vigente nine releases past v0.1.7's slice + recall and v0.3.0's optional rolling summary | `fbc2258` |
+| 5 | `DESIGN.md` §3.3 + §5 approval | `deriveCategory` signature shown as the v0.1 single-skill version, missing the `chainSkills` parameter and chain union logic shipped in v0.2.3 as a security fix; approval matrix table evaluated as single-skill rather than over-the-union | `e49347d` |
+| 6 | `DESIGN.md` (no canonical section for encryption) | Encryption + rekey behavior fragmented across five locations (policy schema, CLI HELP, CHANGELOG v0.1.8 + v0.3.0, README Trade-offs, rekey.ts module header) with no single authoritative DESIGN section; opt-in default (`enabled: false`), bank-coverage asymmetry (skills bank stays plaintext), and rekey caveats (mv→mv non-atomic window, hardcoded collection list, <60s lock best-effort) all elided | `a67c728` |
+| 7 | `DESIGN.md` §6 filesystem layout | "Two separate root dirs" listed when the repo has three banks (skills + sessions + memory); collections listed as `sessions/turns/approvals` when `approval_stats` (v0.3.0) and `sources` (memory) also exist; no command-to-bank mapping, leading external readers to confuse same-session turn replay (`db turns find`) with cross-session memory recall (`harness recall`) | (this commit) |
+
+The drift is invariant across release tempo. The harness shipped an
+average of one feature release per major commit cycle, and every
+release that touched a subsystem updated `CHANGELOG.md` and the local
+module — but `DESIGN.md`, `README.md`'s architectural diagram, and
+the cross-references between sections were systematically left behind.
+Internal review never caught this because the reviewer (the maintainer
+or a same-context reader) automatically fills the gaps with knowledge
+not present in the prose. An external reader (a new contributor, a
+doc-rendering tool, an evaluator deciding whether to adopt the repo)
+sees only what the prose says — and produces output that exposes the
+drift cleanly.
+
+The seven cases above were caught in a single audit session because a
+generic external tool was pointed at the repo for the first time. The
+maintainer had been writing changelogs and code comments correctly the
+whole time; the gap was that no equivalent verification step existed
+for the architectural docs.
+
+### Doctrine
+
+> **Every feature commit must end with a grep of DESIGN, README, and
+> CHANGELOG for the subsystem it touched, and update any prose, table,
+> diagram, or signature that no longer matches the code. Every
+> pre-release must additionally render the architectural docs through
+> an external doc-to-diagram tool (NotebookLM, Mermaid generator,
+> mkdocs preview, or equivalent) and compare the output against the
+> code; mismatches are drift to fix before publish, not after. Drift
+> between docs and code is invisible to internal review because the
+> reviewer fills gaps with context the external reader cannot see.
+> Only mechanical, context-free rendering exposes the drift.**
+
+### Why this is heavy-weight, and why it's still worth it
+
+The cost of the per-commit grep is small (seconds), but the cost of
+the pre-release external rendering is real (minutes to render +
+minutes to read the output critically + minutes to fix discovered
+drift). For a single-maintainer project with releases every few weeks,
+the rendering step is on the order of an hour per release.
+
+The case for paying that hour:
+
+- Drift caught at release time costs the same hour to fix as drift
+  caught after release. The difference is whether external readers
+  see it first or you do.
+- Each drift case caught means one less "the docs say X but the
+  code does Y" support interaction, which costs more than the audit.
+- For a project that explicitly positions itself as
+  "maintainer-grade software for a specific ecosystem" (per the
+  README's "Intended audience" block), the docs ARE the
+  product surface for evaluators. Drift in that surface costs
+  adoption decisions.
+
+### Where this will reappear
+
+- **Adding any new collection to any bank.** §6's collection list
+  drift was a special case of doctrine #4 (duplicate facts). When
+  `approval_stats` was added in v0.3.0, the §6 list wasn't updated.
+  Any future collection (e.g. a hypothetical `audit_log` for §4.3
+  redact diagnostics, or an `embeddings_cache` for memory) will
+  trigger this unless the per-commit grep catches it.
+- **Changing any signature with a default-arg evolution.**
+  `deriveCategory` gained `chainSkills?: readonly ResolvedSkill[]`
+  in v0.2.3 with default `[]`, so every call site stayed compatible
+  — and DESIGN's signature stayed unchanged because the code didn't
+  technically need it to. Future signature evolutions with
+  defaults (e.g. provider getting a new optional param) will
+  silently drift the same way.
+- **Promoting any "TBD post-v0" or "future work" placeholder when
+  the work actually ships.** §4.2's "TBD post-v0" survived nine
+  releases. Any prose that says "TBD" or "future" or "not yet"
+  is a drift candidate the moment the underlying capability lands.
+- **Anywhere a fact lives only in CHANGELOG.** CHANGELOG is
+  history, not spec. If a behavior change lands in CHANGELOG and
+  is referenced from CHANGELOG only, the spec doesn't reflect it.
+  Encryption + rekey behavior was the case here: documented in
+  CHANGELOG v0.1.8 + v0.3.0 + rekey.ts header but absent from
+  DESIGN until §4.4 + §4.5 were added in `a67c728`.
+- **Architectural diagrams older than two minor releases.** The
+  README architecture diagram was ~v0.1.4 vintage when fixed at
+  v0.3.0+. Anything visual that hasn't been touched in two minor
+  releases should be assumed stale until verified.
+
+### How to apply mechanically
+
+For per-commit:
+
+```bash
+# After staging your feature changes
+SUBSYSTEM="approval"  # or "memory" / "encryption" / etc.
+git grep -i "$SUBSYSTEM" -- DESIGN.md README.md CHANGELOG.md
+# Read each hit; update any that no longer matches the code.
+```
+
+For pre-release:
+
+```bash
+# Render the docs through a tool you don't control (the point is
+# that the rendering is mechanical, not reviewed by you).
+# Compare the output against current code. Diff → drift.
+```
+
+A future automation candidate: a CI job that runs a Mermaid generator
+or similar against `README.md` + `DESIGN.md` and fails if the produced
+diagrams reference fewer subsystems than the code has modules. Not
+implemented; tracked as a future improvement.
+
+---
+
 ## How to add to this file
 
 A new entry is justified when:

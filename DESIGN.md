@@ -391,16 +391,64 @@ The `--allow-unsigned` CLI flag (v0.2.7) flips `policy.signature.require_signed`
 
 ## 6. Filesystem layout
 
-The harness operates on **two separate root dirs**:
+The harness operates on **three separate physical bank dirs**, each with its own role and its own backing engine. None shares state with the others — that's the isolation invariant.
+
+| Bank | Default path | Backed by | Encryption (when `policy.encryption.enabled: true`) |
+|---|---|---|---|
+| **Skills FileBank** | `policy.paths.skillsBankDir` (default: agent-skills-cli's `defaultBankRoot()`, typically `$XDG_CONFIG_HOME/agent-skills/`) | `FileBank` from `agent-skills-cli` (NOT `createBankBash`) | **No** — FileBank does not take a key |
+| **Sessions** | `policy.paths.sessionsRoot/<sessionId>/` per session (default: `~/.harness/sessions/<sessionId>/`) | `createBankBash` per session — one bash instance per session | **Yes** |
+| **Memory** | `policy.memory.rootDir` (default: `~/.harness/memory/default/`) | `createWikiPlugin` over `createBankBash` (i.e. just-bash-wiki on top of just-bash-data) | **Yes** |
 
 ```
-$XDG_CONFIG_HOME/agent-skills/        skills FileBank (existing convention)
-$HARNESS_SESSIONS/<session-id>/       per-session bash bank dir
+~/.config/agent-skills/        ← Skills FileBank (skill metadata + indexes)
+  ├── (FileBank-managed files)
+  └── db approval_stats        ← per-skill counters (v0.3.0; bank-level, not per-session)
+
+~/.harness/sessions/           ← Sessions root (one subdir per session)
+  └── s_<id>/                  ← createBankBash instance per session
+      ├── db sessions          ← session metadata document (one row)
+      ├── db turns             ← turn-by-turn audit (rehydrates session history)
+      └── db approvals         ← per-session approval records
+
+~/.harness/memory/default/     ← Memory bank (wiki-backed)
+  ├── (just-bash-wiki internals: pages, indexes, vec embeddings)
+  └── db sources               ← memory records: turn-kind + fact-kind +
+                                  compaction-summary-kind (v0.3.0)
 ```
 
-Inside each session dir, the session bash instance keeps `db sessions`, `db turns`, `db approvals` collections. `runExec` per-skill scratch directories are ephemeral; the harness does not see them.
+`runExec` per-skill scratch directories are ephemeral — they live under whatever temp root just-bash chooses for the per-skill `Bash` instance, get torn down when the skill exits, and the harness never sees them.
 
 There is no in-memory `MountableFs` to design — the CLI handles it per skill.
+
+### 6.1 Which command touches which bank
+
+A common confusion (and one that prior NotebookLM-rendered diagrams demonstrated) is that "rehydrating context" can mean two unrelated things — same-session turn replay vs cross-session memory recall. They live in different banks, accessed by different commands, with different semantics.
+
+| Command | Reads from | What it does |
+|---|---|---|
+| `harness new` | sessions root | Creates a new session dir, inserts an initial `db sessions` doc |
+| `harness resume <id>` | sessions/<id>/ | Re-opens a session bank; loads its turns into in-memory `Session` |
+| `harness chat <id>` | sessions/<id>/ + memory + skills | Full turn loop: reads turns from session, recalls cross-session memory, executes skills from the FileBank |
+| `harness audit <id>` | sessions/<id>/ approvals + bank.audit | Per-session approvals; cross-session execution audit |
+| `harness audit --suggest-overrides` | skills bank `db approval_stats` | Reads the **bank-level** counters added in 0.3.0; nothing from sessions |
+| `harness recall <q>` / `harness search <q>` | memory bank `db sources` | Cross-session semantic recall via wiki search — this IS "transversal memory" |
+| `harness memory list \| forget \| stats \| export \| remember` | memory bank | Memory CRUD; never touches sessions |
+| `harness skills list \| add` | skills FileBank | Subscribed packs; never touches sessions or memory |
+| `harness rekey --target sessions\|memory\|skills\|all` | rotates encryption key (per §4.5); skills target is no-op today |
+| `db turns find '{}' --sort ts:1` (low-level) | **only the current session's** `db turns` | NOT cross-session — replays one session's history |
+| `db <coll> export / import` (low-level) | any bank | JSON snapshots; useful for migration or backup, NOT for fatigue metrics |
+
+The takeaways for tooling and documentation:
+
+- **"Rehydrate context"** in this repo can mean `harness resume` (load one session) OR `harness recall` (cross-session semantic search). They're disjoint. Use the precise verb.
+- **Approval-fatigue metrics** come from `harness audit --suggest-overrides` reading `db approval_stats` in the **skills** bank. They do NOT come from session-level approvals or from db export/import.
+- **Cross-session ("transversal") memory** lives in the memory bank only. The session bank is per-session by design — knowing "what happened in session A" while running session B requires the memory bank.
+
+### 6.2 Isolation invariants
+
+- The three banks **never share documents**. A skill ID never appears in a session's `db turns`; a session ID never appears in skills' `db approval_stats`; a memory record's source never references a session document directly (it's stored as text under `sessionId` metadata for filtering).
+- A compromise of one bank does not leak the others. Encryption keys are scoped per bank where applicable (sessions and memory accept keys; skills doesn't take one — see §4.4 for the asymmetry).
+- The session bank is **per-session**, not "the sessions bank". Each session is its own `createBankBash` instance with its own dir; deleting one session never affects another.
 
 ---
 
