@@ -454,6 +454,56 @@ The takeaways for tooling and documentation:
 - A compromise of one bank does not leak the others. Encryption keys are scoped per bank where applicable (sessions and memory accept keys; skills doesn't take one — see §4.4 for the asymmetry).
 - The session bank is **per-session**, not "the sessions bank". Each session is its own `createBankBash` instance with its own dir; deleting one session never affects another.
 
+### 6.3 Collections per bank (full enumeration)
+
+This section enumerates every collection in every bank explicitly, one heading per collection. The intent is to give external readers (humans and doc-to-diagram tools) hooks at the prose level that match the actual storage layout. ASCII trees and bullet lists tend to get compressed by rendering tools; explicit per-collection sub-headings survive that compression. If a collection is added or removed in a future release, this section is the canonical place to update FIRST — the diagrams and the rest of §6 follow from here.
+
+#### Skills FileBank — `db approval_stats`
+
+Per-skill counters tracking how many times each skill was asked, allowed, or denied at the approval gate. **Bank-level** scope (not per-session) — counts accumulate across all sessions that subscribe the same skill. Read by `harness audit --suggest-overrides` to surface skills that have been consistently approved enough times to warrant a `policy.skills.overrides` entry. **Not encrypted** even when `policy.encryption.enabled: true` (the FileBank doesn't accept a key — see §4.4 for the bank asymmetry).
+
+#### Skills FileBank — managed files (non-`db` collections)
+
+The skills bank also contains `FileBank`-managed files for skill metadata, indexes, and embeddings. These are not `db` collections in the just-bash-data sense — they're plain JSON/binary files written by `agent-skills-cli`'s `FileBank` class. Listed here for completeness; their internal structure is owned by `agent-skills-cli`, not by this harness.
+
+#### Sessions bank — `db sessions`
+
+Session metadata document. **One row per session**, inserted by `harness new` at session creation time. Stores `id`, `createdAt` timestamp, and the `Policy` that was loaded for the session. Read by `harness resume <id>` and `session.load()` to rehydrate the session's policy and creation context. **Encrypted** when `policy.encryption.enabled: true`.
+
+The collection name `sessions` is identical to the parent dir concept. To avoid renderer confusion: `~/.harness/sessions/<sessionId>/` is the **directory layout**; `db sessions` is a **collection inside one such directory** that holds metadata about the session that owns the directory. Dir structure and collection structure happen to share the word "sessions" but are different layers.
+
+#### Sessions bank — `db turns`
+
+Turn-by-turn audit log. **One row per `Turn`**, appended by `session.appendTurn()` once per `runTurn` invocation (per §4 turn protocol). Stores user message, tool calls, tool results (post-redaction per §4.3), assistant text, thinking text, stop reason, and the `approvals[]` array recorded during that turn. The full session history is reconstructed by `db turns find '{}' --sort ts:1`. **Encrypted** when enabled.
+
+#### Sessions bank — `db approvals`
+
+Per-session approval records. Each row is an `ApprovalRecord` containing the `PendingAction` (skill id, derived category, rationale, derivedFrom reasons), the decision (`allow` / `deny`), and the source (`policy` / `user`). Persisted by `approval.record()` after each gate decision. Read by `harness audit <sessionId>` to display the per-session approval history. **Encrypted** when enabled.
+
+Note: `db approvals` is per-session and lives alongside `db turns`. The bank-level `db approval_stats` (skills bank) aggregates counters across these per-session records but does not duplicate the row data — the skills-bank counters are derived increments, the per-session records are the audit truth.
+
+#### Memory bank — `db sources`
+
+Wiki-backed memory records. Each row is a memory entry: user/assistant turn pairs auto-persisted at `end_turn` (kind `turn`), explicit user-supplied facts (kind `fact`), and compaction summaries generated at compaction events (kind `compaction-summary`, since v0.3.0). Indexed by `just-bash-wiki` for semantic search; embeddings stored alongside. Read by `harness recall` / `harness search` for cross-session retrieval, and by `loop.ts` at the start of each `runTurn` for in-context recall (per §4 step 2). **Encrypted** when enabled (memory bank does accept a key).
+
+#### Memory bank — wiki internals
+
+`just-bash-wiki` maintains additional internal structures (page indexes, vec embeddings, etc.) inside `policy.memory.rootDir`. These are not user-facing collections and are not enumerated individually here. Their lifecycle is owned by `just-bash-wiki`, not by this harness.
+
+---
+
+#### When you add a new collection
+
+If a future release adds a new `db <coll>` to any bank:
+
+1. Update §6.3 above with a new heading `#### <Bank> — db <coll>` and a short description (purpose, scope, persistence trigger, who reads it, encryption status).
+2. Update §6's tree diagram and the bank table to include the new collection.
+3. Update `src/rekey.ts` to add the collection to the appropriate per-bank list (`SESSION_COLLECTIONS`, `MEMORY_COLLECTIONS`, or `SKILLS_COLLECTIONS`) — otherwise `harness rekey` won't migrate it. (See doctrine #4 in `LESSONS.md`.)
+4. Update §4.3 trust pipeline if the collection is a write sink for tool output.
+5. Update §6.2 isolation invariants if the new collection introduces a cross-bank reference pattern.
+
+That five-step list is the operational equivalent of "every feature commit should grep DESIGN/README/CHANGELOG" (doctrine #6) but specialized to collection additions.
+
 ---
 
 ## 7. Decisions locked for v0
