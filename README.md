@@ -191,12 +191,23 @@ The skills `FileBank` and the session bank live on **separate dirs**. They never
 
 ## Testing
 
+As of v0.3.0: **195 unit tests across 12 test files** (all PASS, ~30-60s) plus **9 smoke / integration scripts** in `scratch/`. See [TESTING.md](TESTING.md) for the full coverage matrix per module.
+
 | Layer | Tests | Where |
 |---|---|---|
-| Unit | 100 in 6 suites | `src/*.test.ts` |
-| Integration (no LLM) | 4 (slice) + 5 (e2e scripted) | `scratch/{slice,e2e}.ts` |
-| Live LLM (Gemma) | 1 PASS | `scratch/e2e-cf-driven.ts` |
-| Live LLM (CF, real fetch) | listed, opt-in | `scratch/e2e-cloudflare.ts` |
+| Unit | 195 in 12 suites | `src/*.test.ts` |
+| Integration — FileBank + runExec round-trip | 4-step PASS | `scratch/slice.ts` |
+| Integration — full loop, scripted provider | 5-scenario PASS | `scratch/e2e.ts` |
+| Integration — Gemma decisions replayed | 1 PASS | `scratch/e2e-cf-driven.ts` |
+| Integration — cross-session memory | 5 PASS | `scratch/live-test-memory.ts` |
+| Integration — compaction (history slicing) | 5 PASS | `scratch/live-test-compaction.ts` |
+| Integration — AES-256-GCM at rest | 4 PASS | `scratch/live-test-encryption.ts` |
+| Integration — chains (multi-skill orchestration) | 8 PASS | `scratch/live-test-chains.ts` |
+| Integration — Hermes inline `<tool_call>` parser | 5 PASS | `scratch/live-test-hermes.ts` *(replays a captured SSE stream — NOT a live LLM call)* |
+| Integration — summarize=false regression guard | 4 PASS | `scratch/live-test-summarize-disabled.ts` |
+| Live LLM (CF, real fetch) | opt-in | `scratch/e2e-cloudflare.ts` *(requires `CF_ACCOUNT_ID` + `CF_API_TOKEN`)* |
+
+**On the "live" distinction:** `live-test-hermes.ts` and `e2e-cf-driven.ts` are NOT live LLM calls — they replay deterministic streams captured at design time. They are categorized as "Integration" above, not "Live LLM". The only live-LLM smoke is `e2e-cloudflare.ts`, which is opt-in and requires real Cloudflare credentials. No live Anthropic smoke exists by design — see [TESTING.md "Live LLM smoke asymmetry"](TESTING.md) for the rationale.
 
 ```bash
 npm run test               # all unit tests, compact reporter
