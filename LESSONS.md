@@ -463,6 +463,56 @@ The case for paying that hour:
   is small; the cost of a structural misrendering surviving into
   evaluator-facing diagrams is the sample case here.
 
+- **Layout-driven structural elision in tables, lists, and trees.**
+  Information presented in tables, bullet lists, ASCII trees, or
+  mid-paragraph parentheticals tends to get compressed by rendering
+  tools into "shows the structure, lists 1-2 items, moves on".
+  Headings, callouts, blockquotes, and explicit `code-block
+  examples` are treated as discrete prose units that the renderer
+  indexes separately and rarely elides. **If a fact MUST survive
+  external rendering, give it its own heading, callout, or example
+  block.** Two empirical cases from the second-iteration audit:
+
+  *Case 1 — Persistence diagram dropped collections.* DESIGN §6
+  listed the three banks and their collections in a Markdown
+  table plus an ASCII tree. NotebookLM rendered a diagram with
+  two of three banks visible and only two of six total collections
+  named (`db sessions`, `db approval_stats`, and `db sources`
+  were elided). Fix: §6.3 added with one explicit `####` heading
+  per collection. The headings survive compression; the table
+  rows did not.
+
+  *Case 2 — Privacy diagram dropped opt-in + asymmetry + marker
+  format.* DESIGN §4.3 stated the redact marker as `[REDACTED:<
+  kind>:<len>]` mid-paragraph; §4.4 stated "Opt-in. Default
+  `policy.encryption.enabled: false`" as the section's first
+  sentence and the bank-coverage asymmetry as a Markdown table.
+  NotebookLM rendered a diagram with `[REDACTED]` (kind and len
+  elided), an "AES-256-GCM" badge with no opt-in qualifier, and
+  no asymmetry visible. Fix: marker format moved to a dedicated
+  `#### Redaction marker format: [REDACTED:<kind>:<len>]`
+  subsection with a code-block example showing input/output for
+  three pattern kinds; opt-in and asymmetry promoted to
+  blockquote callouts at the top of §4.4 prefixed with `⚠️`.
+
+  The general rule: **a fact's survival under external rendering
+  is proportional to how syntactically prominent it is in the
+  source Markdown.** Structural prose elements (`#### heading`,
+  `> blockquote`, ` ```code block``` `) survive compression more
+  reliably than table rows, list items, or mid-paragraph claims.
+  When the cost of a fact being elided is high (security
+  invariant, scope cap, format that downstream queries depend on),
+  promote it from list/table/paragraph into a heading or callout.
+
+  This sub-clause was confirmed across two independent diagrams
+  in a single audit cycle. A third case is not required to
+  consider it a robust pattern; the failure mode is generic
+  enough (any structural prose element gets compressed by visual
+  layout) that the rule applies prophylactically — promote
+  important facts to syntactically prominent forms during initial
+  documentation, not just retroactively after a rendering tool
+  exposes the elision.
+
 ### How to apply mechanically
 
 For per-commit:

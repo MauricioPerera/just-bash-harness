@@ -297,6 +297,28 @@ The pattern set is conservative (AWS access keys, GitHub tokens by all four pref
 
 The redact pass is a **transform**, not a gate — it does not block execution, it only sanitizes the result on its way to persistence. The approval gate is the only mechanism that blocks a tool call.
 
+#### Redaction marker format: `[REDACTED:<kind>:<len>]`
+
+**Important: the replacement marker is NOT a generic `[REDACTED]`.** Each match is replaced with a structured marker that preserves two operationally useful primitives:
+
+```
+Input:   "aws_access": "AKIAIOSFODNN7EXAMPLE"
+Output:  "aws_access": "[REDACTED:aws-access-key:20]"
+
+Input:   Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+Output:  Authorization: Bearer [REDACTED:jwt:148]
+
+Input:   -----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN...\n-----END PRIVATE KEY-----
+Output:  [REDACTED:pem-private-key:1726]
+```
+
+The two preserved fields:
+
+- **`<kind>`** — which pattern caught the secret. Values match `RedactionPattern.kind`: `aws-access-key`, `github-token`, `github-pat`, `slack-token`, `jwt`, `pem-private-key`. An operator filtering `db turns` for "what kind of secret was scrubbed in this session?" needs the kind. A bare `[REDACTED]` loses this.
+- **`<len>`** — character length of the original match. An operator distinguishing "40-char token" from "1700-char PEM block" needs the length. Useful for triage in audit forensics.
+
+Forensic queries against the audit trail rely on this format. **Renderings or summaries that show the marker as a generic `[REDACTED]` are losing operational primitives** — the format is structured by design. The unit tests in `src/redact.test.ts` assert the exact format including `kind` and `len`.
+
 #### Phase 1 (current) vs Phase 2 (deferred)
 
 Phase 1 (v0.3.0) is what's described above: a fixed conservative pattern set, applied uniformly to every `ToolResult`. Phase 2, deferred at issue-tracking time and not on the roadmap, would add:
@@ -309,7 +331,9 @@ Until Phase 2 lands, a skill returning legitimate secret material has its output
 
 ### 4.4 Encryption at rest
 
-**Opt-in.** Default `policy.encryption.enabled: false`. The harness ships unencrypted by default; the user must explicitly enable it AND provide a key.
+> ⚠️ **OPT-IN, NOT DEFAULT.** `policy.encryption.enabled` defaults to `false`. The harness ships unencrypted; the user must explicitly enable it AND set `HARNESS_ENCRYPTION_KEY`. Diagrams or summaries that present "AES-256-GCM" as if it were always-on are wrong — the algorithm is the mechanism *when enabled*, not the default state.
+
+> ⚠️ **COVERAGE IS ASYMMETRIC.** Even when `enabled: true`, the **skills bank is NOT encrypted**. Only sessions and memory accept a key. The `db approval_stats` collection (skills bank, since v0.3.0) lives in plaintext regardless of policy. See the "Scope" subsection below for the table.
 
 #### Mechanism
 
