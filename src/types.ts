@@ -197,6 +197,22 @@ export interface SessionStore {
   appendTurn(id: SessionId, turn: Turn): Promise<void>;
   snapshot(id: SessionId): Promise<SnapshotRef>;
   resume(id: SessionId): Promise<Session>;
+  /**
+   * Evict cached `Bash` instances. Without an arg, evicts ALL cached
+   * sessions; with a `SessionId`, evicts only that session's bash.
+   *
+   * For one-shot CLI flows this is a no-op (process exits and OS
+   * reclaims). For long-running REPLs or daemon-style hosts that
+   * touch many sessions over time, calling `dispose()` on idle
+   * sessions or on REPL exit prevents accumulation. Each cached
+   * `Bash` is a child-process + file-handles holder via
+   * `createBankBash` → `just-bash`, so unbounded retention is the
+   * lifetime risk this method addresses.
+   *
+   * Idempotent. Calling on a non-existent id or on an empty cache
+   * is a no-op. Returns the count of bashes evicted.
+   */
+  dispose(id?: SessionId): number;
 }
 
 // ─── policy ─────────────────────────────────────────────────────────────────

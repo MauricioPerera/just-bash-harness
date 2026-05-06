@@ -1,6 +1,6 @@
 # Testing
 
-What's tested, what isn't, and why. As of v0.3.0 + post-publish coverage work: **203/203 unit tests pass** in ~30-60s (195 + 8 new in `rekey.test.ts` per issue #8), plus a growing set of integration smokes covering the layers a unit suite can't reach (now including `live-test-chain-approval.ts` per issue #6 and an extended `live-test-encryption.ts` covering both memory AND sessions banks per issue #7).
+What's tested, what isn't, and why. As of v0.3.0 + post-publish coverage work: **212/212 unit tests pass** in ~30-60s (203 + 9 more in `rekey.test.ts` covering `parseDuration` + `cleanupBackups` per issue #15), plus a growing set of integration smokes covering the layers a unit suite can't reach (now including `live-test-chain-approval.ts` per issue #6 and an extended `live-test-encryption.ts` covering both memory AND sessions banks per issue #7).
 
 ## Layout
 

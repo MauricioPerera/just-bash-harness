@@ -33,7 +33,7 @@ import {
   renderSuggestionsYaml,
   type ApprovalStatsStore,
 } from "./approval-stats.js";
-import { runRekey, type RekeyTarget } from "./rekey.js";
+import { runRekey, cleanupBackups, parseDuration, type RekeyTarget } from "./rekey.js";
 import { resolveProviderFromEnv } from "./provider.js";
 import { loadPolicy, DEFAULT_POLICY } from "./policy.js";
 import { runTurn } from "./loop.js";
@@ -68,6 +68,7 @@ Usage:
   harness memory export <path>
   harness bench --truth <path> [--threshold N] [--rerank <mode>] [--k N]
   harness rekey --from-env <var> --to-env <var> [--target sessions|memory|skills|all] [--dry-run]
+  harness rekey --cleanup-backups [--older-than <duration>] [--yes]
   harness version
 
 LLM provider (auto-detected; HARNESS_PROVIDER overrides):
@@ -600,6 +601,12 @@ const cmdChat = async (args: Args): Promise<number> => {
       }
     }
     rl.close();
+    // Issue #14: dispose cached Bash instances on REPL exit so the
+    // child-process handles in createBankBash don't outlive the
+    // user-facing readline session. For one-shot CLI invocations this
+    // is reached via process exit so dispose() would be a no-op; for
+    // REPL it actually frees per-session subprocesses.
+    sessionStore.dispose();
     return lastExit;
   } finally {
     process.removeListener("SIGINT", onSigint);
@@ -1140,7 +1147,78 @@ const cmdMemoryRemember = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const cmdRekeyCleanupBackups = async (args: Args): Promise<number> => {
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+
+  // Roots that may contain backup dirs: sessions root (for per-session
+  // bank backups), memory root (for memory bank backups), skills root
+  // (for the skills bank backups, no-op today but future-proofed).
+  const roots: string[] = [policy.paths.sessionsRoot];
+  if (policy.memory.enabled) roots.push(policy.memory.rootDir);
+  roots.push(policy.paths.skillsBankDir ?? defaultBankRoot());
+
+  const olderThanFlag = args.flags.get("older-than");
+  let olderThanMs: number | undefined;
+  if (typeof olderThanFlag === "string") {
+    const parsed = parseDuration(olderThanFlag);
+    if (parsed === null) {
+      process.stderr.write(
+        `harness rekey --cleanup-backups: invalid --older-than value '${olderThanFlag}'. Expected forms: 7d, 2h, 30m, 60s, or raw ms.\n`,
+      );
+      return 64;
+    }
+    olderThanMs = parsed;
+  }
+
+  // Default to dry-run (apply: false). User must pass --yes or --apply
+  // to actually delete. This is intentionally conservative — `rm -rf`
+  // on encrypted backup dirs is irreversible.
+  const apply = args.flags.get("yes") === true || args.flags.get("apply") === true;
+
+  const result = await cleanupBackups({
+    roots,
+    ...(olderThanMs !== undefined ? { olderThanMs } : {}),
+    apply,
+    log: (line) => process.stdout.write(line + "\n"),
+  });
+
+  process.stdout.write(
+    `\nfound: ${result.found.length}, eligible: ${result.eligible.length}` +
+      `, skipped-orphans: ${result.skippedOrphans.length}` +
+      `, deleted: ${result.deleted.length}` +
+      `, errors: ${result.errors.length}\n`,
+  );
+
+  if (!apply && result.eligible.length > 0) {
+    process.stdout.write(
+      `\nDRY RUN — no backups were deleted. Re-run with --yes (or --apply) to actually delete.\n`,
+    );
+  }
+
+  if (result.skippedOrphans.length > 0) {
+    process.stderr.write(
+      `\nskipped ${result.skippedOrphans.length} orphan backup(s) — their live dir is missing, ` +
+        `and the backup is the only copy of the data. Investigate manually before deleting.\n`,
+    );
+  }
+
+  if (result.errors.length > 0) {
+    process.stderr.write("\nerrors:\n");
+    for (const e of result.errors) process.stderr.write(`  ${e.dir}: ${e.message}\n`);
+    return 1;
+  }
+  return 0;
+};
+
 const cmdRekey = async (args: Args): Promise<number> => {
+  // Issue #15: harness rekey --cleanup-backups [--older-than <duration>] [--yes]
+  // Sweeps `<dir>.rekey-backup-<ts>` dirs left by previous rekeys. Refuses
+  // to delete a backup whose live counterpart is missing (only-copy guard).
+  if (args.flags.get("cleanup-backups") === true) {
+    return cmdRekeyCleanupBackups(args);
+  }
+
   const targetFlag = (args.flags.get("target") as string | true | undefined);
   const target: RekeyTarget =
     targetFlag === "sessions" ||

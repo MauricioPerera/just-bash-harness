@@ -192,6 +192,21 @@ export const createSessionStore = (opts: SessionStoreOpts): SessionStore => {
       bashes.delete(id); // force fresh bash to re-read from disk
       return this.load(id);
     },
+
+    dispose(id?: SessionId): number {
+      // Evict cached bash instances. The Bash holder (just-bash via
+      // createBankBash) keeps a child-process + handles open per
+      // instance; for one-shot CLI this is a no-op (OS reclaims), but
+      // for long-running REPL flows or daemon hosts touching many
+      // sessions, dispose() prevents unbounded subprocess accumulation.
+      // Returns the count of bashes evicted. Idempotent.
+      if (id === undefined) {
+        const n = bashes.size;
+        bashes.clear();
+        return n;
+      }
+      return bashes.delete(id) ? 1 : 0;
+    },
   };
 };
 

@@ -358,3 +358,143 @@ export const runRekey = async (opts: RekeyOpts): Promise<RekeyResult> => {
 
   return result;
 };
+
+// ─── backup cleanup (issue #15) ───────────────────────────────────────────
+
+export interface CleanupBackupsOpts {
+  /** Roots to scan for `*.rekey-backup-*` directories. */
+  roots: readonly string[];
+  /**
+   * Optional age filter in milliseconds. Backups whose mtime is YOUNGER
+   * than this are skipped. e.g. 7 * 24 * 60 * 60 * 1000 → keep last 7 days.
+   * If undefined, ALL discovered backups are eligible.
+   */
+  olderThanMs?: number;
+  /**
+   * When false (default), prints what WOULD be deleted without deleting.
+   * When true, actually rm -rf the matched backup dirs.
+   */
+  apply: boolean;
+  /** Stream progress to caller. */
+  log: (line: string) => void;
+}
+
+export interface CleanupBackupsResult {
+  /** Backup dirs that were considered (regardless of age filter). */
+  found: string[];
+  /** Subset that matched the filter and would be / were deleted. */
+  eligible: string[];
+  /** Backups that were skipped because their corresponding live dir is missing.
+   *  Deleting these would be data loss — they're the only copy of that data. */
+  skippedOrphans: string[];
+  /** Subset actually deleted (only populated when `apply: true`). */
+  deleted: string[];
+  errors: { dir: string; message: string }[];
+}
+
+/**
+ * Sweep one or more bank-roots for `<dir>.rekey-backup-<ts>` directories
+ * left behind by previous `runRekey` invocations. Optionally filter by
+ * age and apply the cleanup. Refuses to delete a backup whose
+ * corresponding live dir doesn't exist (the backup is the only copy).
+ */
+export const cleanupBackups = async (
+  opts: CleanupBackupsOpts,
+): Promise<CleanupBackupsResult> => {
+  const result: CleanupBackupsResult = {
+    found: [],
+    eligible: [],
+    skippedOrphans: [],
+    deleted: [],
+    errors: [],
+  };
+
+  for (const root of opts.roots) {
+    let entries: { name: string; isDirectory: () => boolean }[];
+    try {
+      entries = await readdir(root, { withFileTypes: true });
+    } catch (err) {
+      // Root doesn't exist or unreadable — skip silently for ENOENT,
+      // surface other errors.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+      result.errors.push({ dir: root, message: (err as Error).message });
+      continue;
+    }
+
+    // Backup dirs match: <something>.rekey-backup-<digits>
+    const backupRegex = /^(.+)\.rekey-backup-(\d+)$/;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const match = entry.name.match(backupRegex);
+      if (!match) continue;
+      const backupDir = join(root, entry.name);
+      const liveName = match[1]!;
+      const liveDir = join(root, liveName);
+      result.found.push(backupDir);
+
+      // Check the live dir exists. If missing, we're looking at the only
+      // copy of the data — DO NOT DELETE.
+      try {
+        await stat(liveDir);
+      } catch {
+        result.skippedOrphans.push(backupDir);
+        opts.log(
+          `  skipped (orphan: live dir ${liveDir} is missing — backup is the only copy): ${backupDir}`,
+        );
+        continue;
+      }
+
+      // Age filter.
+      if (opts.olderThanMs !== undefined) {
+        try {
+          const stats = await stat(backupDir);
+          const ageMs = Date.now() - stats.mtimeMs;
+          if (ageMs < opts.olderThanMs) {
+            opts.log(`  too young (age ${Math.round(ageMs / 1000)}s): ${backupDir}`);
+            continue;
+          }
+        } catch (err) {
+          result.errors.push({ dir: backupDir, message: (err as Error).message });
+          continue;
+        }
+      }
+
+      result.eligible.push(backupDir);
+      if (!opts.apply) {
+        opts.log(`  would delete: ${backupDir}`);
+        continue;
+      }
+
+      try {
+        await rm(backupDir, { recursive: true, force: true });
+        result.deleted.push(backupDir);
+        opts.log(`  deleted: ${backupDir}`);
+      } catch (err) {
+        result.errors.push({ dir: backupDir, message: (err as Error).message });
+      }
+    }
+  }
+
+  return result;
+};
+
+/** Parse a duration string like "7d", "2h", "30m", "60s", or raw ms.
+ *  Returns milliseconds, or null on parse failure. */
+export const parseDuration = (s: string): number | null => {
+  const trimmed = s.trim();
+  if (trimmed.length === 0) return null;
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/);
+  if (!match) return null;
+  const n = parseFloat(match[1]!);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const unit = match[2] ?? "ms";
+  const multipliers: Record<string, number> = {
+    ms: 1,
+    s: 1000,
+    m: 60_000,
+    h: 60 * 60_000,
+    d: 24 * 60 * 60_000,
+  };
+  const mul = multipliers[unit];
+  return mul === undefined ? null : Math.round(n * mul);
+};

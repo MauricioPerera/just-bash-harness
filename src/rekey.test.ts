@@ -23,10 +23,15 @@
 
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
-import { mkdtemp, rm, mkdir, stat, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, stat, writeFile, readdir, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runRekey, type BashFactory, type RekeyOpts } from "./rekey.js";
+import {
+  runRekey,
+  cleanupBackups,
+  parseDuration,
+  type BashFactory,
+} from "./rekey.js";
 
 // ─── fake Bash + factory ────────────────────────────────────────────────────
 
@@ -380,6 +385,180 @@ test("runRekey: skills target with skillsRoot is wired and produces no-op when n
     assert.match(findCalls[0]!.cmd, /approval_stats/);
     const insertCalls = state.calls.filter((c) => c.cmd.includes("insert"));
     assert.equal(insertCalls.length, 0, "no inserts when no collections exist");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ─── parseDuration tests (issue #15) ────────────────────────────────────────
+
+test("parseDuration: numeric forms", () => {
+  assert.equal(parseDuration("60s"), 60_000);
+  assert.equal(parseDuration("5m"), 5 * 60_000);
+  assert.equal(parseDuration("2h"), 2 * 60 * 60_000);
+  assert.equal(parseDuration("7d"), 7 * 24 * 60 * 60_000);
+  assert.equal(parseDuration("100ms"), 100);
+  assert.equal(parseDuration("100"), 100); // raw ms default
+});
+
+test("parseDuration: fractional", () => {
+  assert.equal(parseDuration("1.5h"), Math.round(1.5 * 60 * 60_000));
+});
+
+test("parseDuration: garbage returns null", () => {
+  assert.equal(parseDuration(""), null);
+  assert.equal(parseDuration("abc"), null);
+  assert.equal(parseDuration("-5d"), null);
+  assert.equal(parseDuration("5y"), null); // unsupported unit
+});
+
+// ─── cleanupBackups tests (issue #15) ───────────────────────────────────────
+
+test("cleanupBackups: dry-run lists eligible backups, deletes nothing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cleanup-dry-"));
+  try {
+    // Create one live dir + corresponding backup
+    const liveDir = join(root, "s_alive");
+    const backupDir = join(root, "s_alive.rekey-backup-1717000000000");
+    await mkdir(liveDir, { recursive: true });
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(join(liveDir, ".sentinel"), "x", "utf8");
+    await writeFile(join(backupDir, ".sentinel"), "x", "utf8");
+
+    const lines: string[] = [];
+    const result = await cleanupBackups({
+      roots: [root],
+      apply: false,
+      log: (l) => lines.push(l),
+    });
+
+    assert.equal(result.found.length, 1);
+    assert.equal(result.eligible.length, 1);
+    assert.equal(result.deleted.length, 0, "dry-run must not delete");
+    // Backup dir still exists
+    await stat(backupDir);
+    // Log should mention "would delete"
+    assert.ok(lines.some((l) => l.includes("would delete")));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cleanupBackups: apply: true actually deletes eligible backups", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cleanup-apply-"));
+  try {
+    const liveDir = join(root, "s_alive");
+    const backupDir = join(root, "s_alive.rekey-backup-1717000000000");
+    await mkdir(liveDir, { recursive: true });
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(join(liveDir, ".sentinel"), "x", "utf8");
+    await writeFile(join(backupDir, ".sentinel"), "x", "utf8");
+
+    const result = await cleanupBackups({
+      roots: [root],
+      apply: true,
+      log: () => undefined,
+    });
+
+    assert.equal(result.found.length, 1);
+    assert.equal(result.eligible.length, 1);
+    assert.equal(result.deleted.length, 1);
+    // Backup dir is gone, live dir still exists
+    await assert.rejects(stat(backupDir));
+    await stat(liveDir);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cleanupBackups: REFUSES to delete orphan backup whose live dir is missing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cleanup-orphan-"));
+  try {
+    // Create ONLY the backup, no live dir — this is "the only copy"
+    // and deleting it would be data loss.
+    const backupDir = join(root, "s_orphan.rekey-backup-1717000000000");
+    await mkdir(backupDir, { recursive: true });
+    await writeFile(join(backupDir, ".data"), "the only copy of this", "utf8");
+
+    const result = await cleanupBackups({
+      roots: [root],
+      apply: true, // even with apply
+      log: () => undefined,
+    });
+
+    assert.equal(result.found.length, 1);
+    assert.equal(result.eligible.length, 0, "orphan must not be eligible");
+    assert.equal(result.skippedOrphans.length, 1);
+    assert.equal(result.deleted.length, 0);
+    // Backup still there
+    await stat(backupDir);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cleanupBackups: --older-than filter respects age", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cleanup-age-"));
+  try {
+    const liveDir = join(root, "s_alive");
+    const youngBackup = join(root, "s_alive.rekey-backup-1717000000000");
+    const oldBackup = join(root, "s_alive.rekey-backup-1716000000000");
+    await mkdir(liveDir, { recursive: true });
+    await mkdir(youngBackup, { recursive: true });
+    await mkdir(oldBackup, { recursive: true });
+    await writeFile(join(liveDir, ".sentinel"), "x", "utf8");
+    await writeFile(join(youngBackup, ".sentinel"), "x", "utf8");
+    await writeFile(join(oldBackup, ".sentinel"), "x", "utf8");
+
+    // Age the "old" one to 10 minutes ago
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000);
+    await utimes(oldBackup, tenMinAgo, tenMinAgo);
+
+    // Only consider backups older than 5 minutes
+    const result = await cleanupBackups({
+      roots: [root],
+      olderThanMs: 5 * 60_000,
+      apply: true,
+      log: () => undefined,
+    });
+
+    assert.equal(result.found.length, 2);
+    assert.equal(result.eligible.length, 1, "only the old backup should be eligible");
+    assert.equal(result.deleted.length, 1);
+    // Old gone, young still there
+    await assert.rejects(stat(oldBackup));
+    await stat(youngBackup);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cleanupBackups: ENOENT root is silently skipped, not an error", async () => {
+  const result = await cleanupBackups({
+    roots: ["/this/path/does/not/exist/12345"],
+    apply: true,
+    log: () => undefined,
+  });
+  assert.equal(result.found.length, 0);
+  assert.equal(result.errors.length, 0);
+});
+
+test("cleanupBackups: non-backup dirs are ignored", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cleanup-nonbackup-"));
+  try {
+    // Make a few dirs that don't match the rekey-backup pattern
+    await mkdir(join(root, "s_alive"), { recursive: true });
+    await mkdir(join(root, "random_dir"), { recursive: true });
+    await mkdir(join(root, "s_alive.rekey-staging-abc"), { recursive: true });
+
+    const result = await cleanupBackups({
+      roots: [root],
+      apply: true,
+      log: () => undefined,
+    });
+
+    assert.equal(result.found.length, 0);
+    assert.equal(result.deleted.length, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

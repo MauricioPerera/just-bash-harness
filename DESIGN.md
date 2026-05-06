@@ -497,6 +497,19 @@ The takeaways for tooling and documentation:
 
 - The three banks **never share documents**. A skill ID never appears in a session's `db turns`; a session ID never appears in skills' `db approval_stats`; a memory record's source never references a session document directly (it's stored as text under `sessionId` metadata for filtering).
 - A compromise of one bank does not leak the others. Encryption keys are scoped per bank where applicable (sessions and memory accept keys; skills doesn't take one — see §4.4 for the asymmetry).
+
+### 6.2.1 Bash instance lifecycle
+
+`createSessionStore` caches one `Bash` instance per `SessionId` in an in-memory `Map<SessionId, BashInstance>`. Each `Bash` is a child-process holder via `createBankBash` → `just-bash`, with associated file handles and OS resources. The cache is per-process, lives for the lifetime of the `SessionStore` object, and grows monotonically as new sessions are touched.
+
+For one-shot CLI flows (`harness new`, `harness chat <id> --message ...`, `harness audit <id>`), the cache lifetime is bounded by process exit and the OS reclaims the resources — no explicit cleanup is needed.
+
+For long-running flows that touch many sessions over time — `harness chat <id>` REPL with `/audit other-id` slash commands, future daemon-style hosts, programmatic embedders — the cache can accumulate. **Use `SessionStore.dispose(id?)` to evict cached bashes** (added in issue #14):
+
+- `dispose()` (no arg): evict ALL cached bashes, returns the count evicted. Idiomatic on REPL exit or on host shutdown.
+- `dispose(id)` (specific id): evict one session's bash, returns 0 or 1. Idiomatic after slash-command operations against a non-current session.
+
+The CLI's REPL implementation (`cli.ts cmdChat`) calls `dispose()` on REPL exit. Programmatic embedders running long sessions should call `dispose()` periodically or at shutdown.
 - The session bank is **per-session**, not "the sessions bank". Each session is its own `createBankBash` instance with its own dir; deleting one session never affects another.
 
 ### 6.3 Collections per bank (full enumeration)
