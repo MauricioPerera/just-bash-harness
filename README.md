@@ -2,7 +2,7 @@
 
 Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-bash) and the [`agent-skills`](https://github.com/MauricioPerera/agent-skills) ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers.
 
-**Version:** 0.3.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction (with optional rolling LLM summary) + AES-256-GCM at rest (with `harness rekey` rotation) + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + Hermes parser w/ diagnostics + AbortSignal propagation + per-tool-call rationale + secret redaction at persistence boundaries + approval-fatigue metrics + Cloudflare provider rate-limit + backoff. 195/195 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry.
+**Version:** 0.3.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction (with optional rolling LLM summary) + AES-256-GCM at rest **(opt-in via `policy.encryption.enabled`, default `false`)** with `harness rekey` rotation + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + Hermes parser w/ diagnostics + AbortSignal propagation + per-tool-call rationale + secret redaction at persistence boundaries (Phase 1 conservative patterns) + approval-fatigue metrics + Cloudflare provider rate-limit + backoff. 195/195 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry (binary on PATH: `harness`).
 
 ## Intended audience
 
@@ -168,6 +168,8 @@ Two LLM providers ship today; the factory auto-detects from env:
 |---|---|---|
 | Anthropic Messages API | `claude-opus-4-7` | `ANTHROPIC_API_KEY` |
 | Cloudflare Workers AI | `@cf/google/gemma-4-26b-a4b-it` | `CF_ACCOUNT_ID`, `CF_API_TOKEN` |
+
+> ⚠️ **Cloudflare model identifiers REQUIRE the `@cf/<vendor>/` prefix.** The bare `gemma-4-26b-a4b-it` will NOT work — Workers AI rejects models without their namespace prefix. If a diagram, summary, or copy-pasted snippet shows the model identifier without `@cf/google/`, it is wrong. Use the full string `@cf/google/gemma-4-26b-a4b-it` in `--model`, `CF_LLM_MODEL`, or `opts.model`.
 
 Auto-detect prefers Cloudflare when both sets of credentials are present. Override via `HARNESS_PROVIDER=anthropic|cloudflare`. Override the model via `--model <id>` flag, `HARNESS_DEFAULT_MODEL` (Anthropic), or `CF_LLM_MODEL` (Cloudflare).
 

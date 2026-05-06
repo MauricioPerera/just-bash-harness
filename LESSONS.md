@@ -535,6 +535,62 @@ The case for paying that hour:
   documentation, not just retroactively after a rendering tool
   exposes the elision.
 
+- **Summary-style infographics and focused diagrams read from
+  different sources.** A doc-to-diagram tool produces multiple
+  diagrams of the same project, and they don't all read the same
+  prose. Focused diagrams (one subsystem, one mechanism, one flow)
+  tend to read the **detailed section** for that subsystem. Summary
+  infographics that try to cover the whole project at once tend to
+  read the **README banner / status line / abstract** because
+  that's where everything is co-located. This means callouts and
+  qualifiers added to a detailed section may NOT reach the summary
+  infographic; the banner is a separate source the renderer treats
+  as authoritative for "high-level project summary".
+
+  *Concrete case from the second-iteration audit:* DESIGN §4.4 had
+  ⚠️ blockquote callouts at the top stating "OPT-IN, NOT DEFAULT"
+  for encryption (added in commit `a186b23` to fix a previous
+  diagram's "AES-256-GCM badge with no opt-in qualifier"). A
+  subsequent NotebookLM summary infographic (`just-bash-harness:
+  Orquestador de Agentes Seguro y Especializado`) rendered
+  encryption as `Cifrado AES-256-GCM en reposo` — with no opt-in
+  qualifier — even though §4.4 had it prominently. The renderer
+  read the README banner ("AES-256-GCM at rest (with `harness
+  rekey` rotation)") which had not been updated to include
+  "opt-in". Same fact, different sources, different qualifiers,
+  different output.
+
+  **The rule: when a detailed section gets a callout or qualifier
+  that materially changes how the feature should be understood,
+  replicate that qualifier in the README banner / status line /
+  abstract.** A focused diagram and a summary infographic should
+  produce the same characterization of the feature; they will only
+  if both sources carry the same qualifier.
+
+  Operationally: when you add a `> ⚠️ ...` callout to any DESIGN
+  section, grep the README banner for the feature being qualified
+  and add the qualifier inline there too. The fix in this audit
+  cycle was a one-line README banner edit:
+
+  ```diff
+  - + AES-256-GCM at rest (with `harness rekey` rotation)
+  + + AES-256-GCM at rest **(opt-in via `policy.encryption.enabled`,
+  +   default `false`)** with `harness rekey` rotation
+  ```
+
+  And a parallel one-line edit for redaction:
+
+  ```diff
+  - + secret redaction at persistence boundaries
+  + + secret redaction at persistence boundaries (Phase 1
+  +   conservative patterns)
+  ```
+
+  These edits do not duplicate prose at scale — the detailed §4.4
+  / §4.3 sections retain the full callout — but they propagate the
+  most important qualifier into the source the summary infographic
+  reads.
+
 ### How to apply mechanically
 
 For per-commit:
