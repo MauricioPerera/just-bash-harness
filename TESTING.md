@@ -1,6 +1,6 @@
 # Testing
 
-What's tested, what isn't, and why. As of v0.3.0: **195/195 unit tests pass** in ~30-60s, plus a growing set of integration smokes covering the layers a unit suite can't reach.
+What's tested, what isn't, and why. As of v0.3.0 + post-publish coverage work: **203/203 unit tests pass** in ~30-60s (195 + 8 new in `rekey.test.ts` per issue #8), plus a growing set of integration smokes covering the layers a unit suite can't reach (now including `live-test-chain-approval.ts` per issue #6 and an extended `live-test-encryption.ts` covering both memory AND sessions banks per issue #7).
 
 ## Layout
 
@@ -98,6 +98,7 @@ If a future provider also hand-rolls its parser (e.g. a hypothetical Mistral via
 | Module | Reason |
 |---|---|
 | `provider-anthropic.ts` (full SDK stream parse) | Helpers (`buildMessages`, `buildTools`, `toInputSchema`, `mapStopReason`, `shortIdFromIdentity`, `toolNameOf`, `buildSystemParam`, `toolResultBlocks`) ARE unit-tested. The full `MessageStream` event-translation path (content_block_start / _delta / _stop sequences) is NOT mocked — driving the official SDK with synthetic SSE bodies is brittle to SDK updates. Construction + fetch failure surfacing IS covered. The remaining surface mirrors Cloudflare's; same shape, well-exercised by parallel tests. See "Live LLM smoke asymmetry" above for why there is also no live Anthropic smoke. |
+| `rekey.ts` integration with real `just-bash-data` encryption | The pure orchestration logic (export-with-old → import-with-new → atomic rename, dry-run path, concurrent-process detection, stops-on-first-error, skills target wiring) IS unit-tested in `rekey.test.ts` via a stubbed `bashFactory` that records every `db <coll>` call. What is NOT covered: end-to-end with a real encrypted just-bash-data bank — that's manually verified per release. A future `live-test-rekey.ts` smoke could close this if needed. |
 | `loop.ts` (`runTurn` orchestration) | Covered by integration: 5 `e2e.ts` scenarios exercise every branch (regular auto-allow, explicit ask→allow, explicit ask→deny, prohibited hard-deny, text-only termination) plus one Gemma-driven variant + the dedicated memory / compaction smokes. The pure helpers extracted from `runTurn` (`runCompactionSummary`, `synthesizeUnknownChainStep`) ARE unit-tested. |
 | `toolbox.ts` (`createToolbox`, `summarize`) | `applicable_when` filtering IS unit-tested in `toolbox.test.ts`. The remaining surface (runQuery + runExec round-trip with audit) is covered by integration via `slice.ts`. Mocking `FileBank` adequately is more code than the test would save. |
 | `session.ts` (`createSessionStore`, `restoreSnapshot`) | Covered by integration: `slice.ts` exercises the bash-backed `db sessions/turns/approvals insert/find/export`; `e2e.ts` exercises `appendTurn` + `load`; `e2e-cf-driven.ts` exercises the full round-trip post-loop. |

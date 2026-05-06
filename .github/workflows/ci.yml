@@ -133,3 +133,12 @@ jobs:
       - name: Smoke — summarize=false regression guard
         working-directory: just-bash-harness
         run: npm run smoke:summarize-disabled
+
+      # SECURITY regression guard for the v0.2.3 chains-bypass-approval bug:
+      # verifies the loop.ts → approval.ts wiring fires for chain steps end-to-end.
+      # Unit tests cover deriveCategory directly; this smoke catches a regression
+      # in HOW deriveCategory gets called from the loop. See issue #6 +
+      # LESSONS.md doctrine #1 for the bug class this guards against.
+      - name: Smoke — chain-union approval wiring
+        working-directory: just-bash-harness
+        run: npm run smoke:chain-approval

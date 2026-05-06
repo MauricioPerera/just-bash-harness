@@ -55,13 +55,14 @@
     "build": "tsup",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx src/cli.ts",
-    "test": "node --test --import=tsx src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/toolbox.test.ts src/memory.test.ts",
-    "test:list": "node --test --import=tsx --test-reporter=spec src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/toolbox.test.ts src/memory.test.ts",
+    "test": "node --test --import=tsx src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/rekey.test.ts src/toolbox.test.ts src/memory.test.ts",
+    "test:list": "node --test --import=tsx --test-reporter=spec src/cli-args.test.ts src/approval.test.ts src/approval-stats.test.ts src/loop.test.ts src/policy.test.ts src/policy-overrides.test.ts src/provider.test.ts src/provider-anthropic.test.ts src/provider-cloudflare.test.ts src/redact.test.ts src/rekey.test.ts src/toolbox.test.ts src/memory.test.ts",
     "smoke:slice": "tsx scratch/slice.ts",
     "smoke:e2e": "tsx scratch/e2e.ts",
     "smoke:cf-driven": "tsx scratch/e2e-cf-driven.ts",
     "smoke:cf-live": "tsx scratch/e2e-cloudflare.ts",
     "smoke:summarize-disabled": "tsx scratch/live-test-summarize-disabled.ts",
+    "smoke:chain-approval": "tsx scratch/live-test-chain-approval.ts",
     "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

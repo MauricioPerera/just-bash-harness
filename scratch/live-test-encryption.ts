@@ -1,6 +1,8 @@
 // Encryption smoke: write a memory with key K, verify the disk content is
 // NOT plaintext, reload with K → recall works, reload with wrong key → fails
-// clean.
+// clean. Then repeat the same verification for the SESSIONS bank to ensure
+// both encryption-accepting bank kinds (memory + sessions) preserve the
+// invariant. See issue #7 for why the sessions verification is necessary.
 
 import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +11,8 @@ import { join } from "node:path";
 import type { EmbeddingProvider } from "@rckflr/agent-skills-cli";
 
 import { createMemoryStore } from "../src/memory.js";
+import { createSessionStore } from "../src/session.js";
+import type { Policy, Turn } from "../src/types.js";
 
 // Toy embedder, same as memory.test.ts.
 const toyEmbedder = (dim = 32): EmbeddingProvider => ({
@@ -149,13 +153,175 @@ const main = async (): Promise<void> => {
     );
     await rm(dirPlain, { recursive: true, force: true }).catch(() => undefined);
 
+    // ────────────────────────────────────────────────────────────────────
+    // SESSIONS BANK VERIFICATION (issue #7)
+    //
+    // The above five checks validate the memory bank. The sessions bank
+    // ALSO accepts an encryption key per `src/session.ts:37-39`, but
+    // there was no equivalent smoke until issue #7. The structural
+    // similarity (both use createBankBash with encryptionKey) plus the
+    // operational asymmetry (only memory was bytes-on-disk verified)
+    // would have allowed a regression in createBankBash to silently
+    // degrade the sessions encryption without detection. Doctrine #6
+    // sub-clause B ("deliberate asymmetries") motivated adding this.
+    // ────────────────────────────────────────────────────────────────────
+    const sessDir = await mkdtemp(join(tmpdir(), "encrypt-sessions-"));
+    console.log("");
+    console.log(`sessions dir: ${sessDir}`);
+
+    const SESSION_SECRET =
+      "this is a session-only secret — must NOT appear on disk after encryption";
+
+    const buildSessionPolicy = (root: string): Policy => ({
+      version: 1,
+      skills: { subscribed: [], overrides: {} },
+      signature: { require_signed: false },
+      approval: {
+        matrix: { prohibited: "deny", explicit: "ask", regular: "allow" },
+      },
+      limits: { maxTurns: 50, maxToolCallsPerTurn: 10, maxWallclockMs: 60_000 },
+      paths: { sessionsRoot: root },
+      memory: {
+        enabled: false,
+        rootDir: "",
+        recall: { topK: 5, charBudget: 6000 },
+        persist: { autoPersistTurns: false, minMessageLength: 20 },
+        compaction: { enabled: false, windowSize: 50 },
+      },
+      encryption: { enabled: true },
+    });
+
+    // ── (6) Session: write a turn with KEY_A and a known secret ─────────
+    const sessPolicy = buildSessionPolicy(sessDir);
+    const sessStoreA = createSessionStore({
+      sessionsRoot: sessDir,
+      loadPolicy: () => Promise.resolve(sessPolicy),
+      encryptionKey: KEY_A,
+    });
+    const sessId = await sessStoreA.create({
+      policyPath: "<encrypt-test>",
+      sessionRoot: sessDir,
+    });
+    const turn: Turn = {
+      id: "t_test_001" as Turn["id"],
+      ts: new Date().toISOString(),
+      input: { user: SESSION_SECRET },
+      output: {
+        text: "ack: " + SESSION_SECRET,
+        toolCalls: [],
+        stopReason: "end_turn",
+      },
+      approvals: [],
+    };
+    await sessStoreA.appendTurn(sessId, turn);
+
+    // ── (7) Disk content of the session dir must NOT contain plaintext ─
+    const sessFiles = await walk(sessDir);
+    let sessPlaintextFound = false;
+    let sessFoundIn = "";
+    for (const f of sessFiles) {
+      const buf = await readFile(f).catch(() => Buffer.alloc(0));
+      if (buf.includes(Buffer.from(SESSION_SECRET))) {
+        sessPlaintextFound = true;
+        sessFoundIn = f;
+        break;
+      }
+    }
+    check(
+      `sessions: secret string not found verbatim on disk (encryption working)`,
+      !sessPlaintextFound,
+      sessPlaintextFound ? `leaked in ${sessFoundIn}` : "",
+    );
+
+    // ── (8) Reload session with same key → load() returns the turn ─────
+    const sessStoreA2 = createSessionStore({
+      sessionsRoot: sessDir,
+      loadPolicy: () => Promise.resolve(sessPolicy),
+      encryptionKey: KEY_A,
+    });
+    const reloaded = await sessStoreA2.load(sessId);
+    const turnRecovered =
+      reloaded.turns.length === 1 &&
+      reloaded.turns[0]!.input.user === SESSION_SECRET;
+    check(
+      `sessions: load with correct key recovers the turn content`,
+      turnRecovered,
+      `turns.length=${reloaded.turns.length}, input.user=${JSON.stringify(reloaded.turns[0]?.input.user)?.slice(0, 60)}...`,
+    );
+
+    // ── (9) Reload session with WRONG key → load fails or yields empty ──
+    const sessStoreWrong = createSessionStore({
+      sessionsRoot: sessDir,
+      loadPolicy: () => Promise.resolve(sessPolicy),
+      encryptionKey: "this-is-the-WRONG-key-totally-different",
+    });
+    let sessWrongLoaded = false;
+    let sessThrew = false;
+    let sessRecoveredText: string | undefined;
+    try {
+      const wrongLoaded = await sessStoreWrong.load(sessId);
+      sessWrongLoaded = true;
+      sessRecoveredText = wrongLoaded.turns[0]?.input.user;
+    } catch {
+      sessThrew = true;
+    }
+    check(
+      `sessions: wrong key cannot read the turn content`,
+      sessThrew ||
+        !sessWrongLoaded ||
+        sessRecoveredText !== SESSION_SECRET,
+      sessThrew
+        ? "(threw — acceptable)"
+        : `recovered=${JSON.stringify(sessRecoveredText)?.slice(0, 60)}`,
+    );
+
+    // ── (10) Sanity: unencrypted session bank IS readable on disk ──────
+    const sessDirPlain = await mkdtemp(join(tmpdir(), "encrypt-sessions-plain-"));
+    const sessPlainPolicy = {
+      ...buildSessionPolicy(sessDirPlain),
+      encryption: { enabled: false } satisfies Policy["encryption"],
+    };
+    const sessStorePlain = createSessionStore({
+      sessionsRoot: sessDirPlain,
+      loadPolicy: () => Promise.resolve(sessPlainPolicy),
+      // no encryptionKey
+    });
+    const sessIdPlain = await sessStorePlain.create({
+      policyPath: "<encrypt-test-plain>",
+      sessionRoot: sessDirPlain,
+    });
+    const PLAIN_SESSION_SECRET =
+      "control: unencrypted session secret should be findable on disk";
+    await sessStorePlain.appendTurn(sessIdPlain, {
+      ...turn,
+      input: { user: PLAIN_SESSION_SECRET },
+      output: { ...turn.output, text: PLAIN_SESSION_SECRET },
+    });
+    const sessPlainFiles = await walk(sessDirPlain);
+    let sessPlainFound = false;
+    for (const f of sessPlainFiles) {
+      const buf = await readFile(f).catch(() => Buffer.alloc(0));
+      if (buf.includes(Buffer.from(PLAIN_SESSION_SECRET))) {
+        sessPlainFound = true;
+        break;
+      }
+    }
+    check(
+      `sessions control: unencrypted session IS readable on disk (asymmetry confirmed)`,
+      sessPlainFound,
+      "expected plaintext findable when encryption is off",
+    );
+    await rm(sessDirPlain, { recursive: true, force: true }).catch(() => undefined);
+    await rm(sessDir, { recursive: true, force: true }).catch(() => undefined);
+
     console.log("");
     console.log(`${pass}/${pass + fail} checks passed`);
 
     if (fail === 0) {
       console.log("");
       console.log(
-        "PASS — AES-256-GCM at rest works: secret unreadable on disk, recoverable with correct key, denied with wrong key.",
+        "PASS — AES-256-GCM at rest works for BOTH memory AND sessions banks: " +
+          "secrets unreadable on disk, recoverable with correct key, denied with wrong key.",
       );
       process.exit(0);
     }

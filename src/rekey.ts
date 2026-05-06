@@ -38,6 +38,27 @@ import { createBankBash } from "@rckflr/agent-skills-cli";
 
 type BashInstance = ReturnType<typeof createBankBash>;
 
+/**
+ * Factory for constructing a Bash instance against a bank dir with an
+ * encryption key. Defaulted to `createBankBash` from agent-skills-cli;
+ * tests inject a stub via `RekeyOpts.bashFactory` so they can record
+ * and verify the call ordering (export-with-old → import-with-new →
+ * rename-and-promote) without needing real filesystem-backed
+ * encryption.
+ */
+export type BashFactory = (opts: {
+  bankDir: string;
+  encryptionKey: string;
+  salt?: string;
+}) => BashInstance;
+
+const defaultBashFactory: BashFactory = (opts) =>
+  createBankBash({
+    bankDir: opts.bankDir,
+    encryptionKey: opts.encryptionKey,
+    ...(opts.salt !== undefined ? { salt: opts.salt } : {}),
+  });
+
 export type RekeyTarget = "sessions" | "memory" | "skills" | "all";
 
 export interface RekeyOpts {
@@ -67,6 +88,12 @@ export interface RekeyOpts {
   dryRun: boolean;
   /** Stream progress to stdout. */
   log: (line: string) => void;
+  /**
+   * Override the Bash factory. Default uses `createBankBash` from
+   * agent-skills-cli. Tests inject a stub to record call ordering
+   * without real filesystem-backed encryption.
+   */
+  bashFactory?: BashFactory;
 }
 
 export interface RekeyResult {
@@ -111,8 +138,9 @@ const bankWith = (
   dir: string,
   key: string,
   salt: string | undefined,
+  factory: BashFactory,
 ): BashInstance =>
-  createBankBash({
+  factory({
     bankDir: dir,
     encryptionKey: key,
     ...(salt !== undefined ? { salt } : {}),
@@ -174,6 +202,7 @@ const rekeyOneDir = async (
   salt: string | undefined,
   dryRun: boolean,
   log: (l: string) => void,
+  factory: BashFactory,
 ): Promise<string | null> => {
   log(`  • ${dir}`);
   // Verify the dir actually exists.
@@ -185,7 +214,7 @@ const rekeyOneDir = async (
   }
 
   // Step 1+2: export every collection with old key.
-  const oldBash = bankWith(dir, oldKey, salt);
+  const oldBash = bankWith(dir, oldKey, salt, factory);
   const exported: { coll: string; tmp: string }[] = [];
   for (const coll of collections) {
     try {
@@ -212,7 +241,7 @@ const rekeyOneDir = async (
   // Step 3: init a sibling staging dir with the new key.
   const stagingDir = `${dir}.rekey-staging-${randomUUID().slice(0, 8)}`;
   await mkdir(stagingDir, { recursive: true });
-  const newBash = bankWith(stagingDir, newKey, salt);
+  const newBash = bankWith(stagingDir, newKey, salt, factory);
 
   // Step 4: import each collection into staging.
   let totalDocs = 0;
@@ -234,9 +263,11 @@ const rekeyOneDir = async (
 };
 
 /** Run the rekey process. Pure(ish) — depends on fs + createBankBash but
- *  has no other globals; testable with a stubbed `bashFactory` if we ever
- *  need it (not done now to avoid over-engineering MVP). */
+ *  Tests inject `opts.bashFactory` to record bank construction order +
+ *  exec calls per stage (export-with-old → import-with-new) without
+ *  needing real filesystem-backed encryption. See `rekey.test.ts`. */
 export const runRekey = async (opts: RekeyOpts): Promise<RekeyResult> => {
+  const factory: BashFactory = opts.bashFactory ?? defaultBashFactory;
   const result: RekeyResult = {
     ok: true,
     bankDirsProcessed: 0,
@@ -312,6 +343,7 @@ export const runRekey = async (opts: RekeyOpts): Promise<RekeyResult> => {
         d.salt,
         opts.dryRun,
         opts.log,
+        factory,
       );
       if (backup) result.backupDirs.push(backup);
       result.bankDirsProcessed++;
