@@ -2,6 +2,27 @@
 
 Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` ships; until then we track design milestones.
 
+## [Unreleased]
+
+### Suggester pattern blacklist for destructive skills (ROADMAP §2 hard rule, issue #23 Phase 1)
+
+`harness audit --suggest-overrides` no longer proposes destructive skills for promotion to `regular`, regardless of how often the user has approved them. Closes ROADMAP §2's stated hard rule that v0.3.0 acknowledged but did not enforce: a user who routinely approves `delete-workflow` for legitimate cleanup should not have it auto-promoted, because a future LLM-proposed deletion would then execute without prompt.
+
+- New exported constant `DESTRUCTIVE_SKILL_PATTERNS` in `src/approval-stats.ts`: 11 case-insensitive regexes covering `delete-`, `drop-`, `rm-`, `force-`, `nuke-`, `purge-`, `truncate-`, `wipe-`, `destroy-`, `prune-`, plus tail-anchored `batch-deactivate$`. Patterns anchor at start-of-string OR after `/` or `-` so they fire on fully-qualified IDs like `github.com/foo/pack/delete-workflow` without false-matching word boundaries — `undelete-cache` is correctly NOT flagged.
+- New helper `matchDestructivePattern(skillId): RegExp | null` for callers needing the matched pattern.
+- `suggestOverrides()` return type evolved from `OverrideSuggestion[]` to `{ suggestions, skipped }`. Skills that pass ratio/asks gates but match a destructive pattern appear in `skipped` with `reason: "destructive"` and the matching pattern source attributed. The breaking API change is contained: only `cli.ts` and the test suite consume this function in the harness; updated in the same commit.
+- `harness audit --suggest-overrides` output now includes a `# skipped: N skill(s) excluded as destructive` block listing the filtered skills with their matched pattern. New `--quiet` flag suppresses the section. Default is verbose so operators understand WHY a frequently-approved destructive skill never appears in the YAML output (LESSONS doctrine #6 sub-clause C).
+- 11 new unit tests in `approval-stats.test.ts`: positive matches (`delete-workflow`, `truncate-table`, case-insensitive `DELETE-Foo`, tail-anchored `batch-deactivate`), false-positive guards (`undelete-cache`, `disk-usage`, `pg-vacuum`), mixed-list integration (destructive + benign together), `renderSkippedSection` rendering. All 225 existing tests still pass.
+- DESIGN §3.3 has a new subsection "Suggester blacklist for destructive skills" documenting the pattern table, the false-positive guard logic, and the scope (advisory at suggestion time, NOT retroactive on existing override entries).
+- Decision recorded 2026-05-06 in `D:/repos/ailibro/CONTRACT-suggester-blacklist.md` § Maintainer decision: Option 1 (pattern set) ships now; Option 3 (`destructive: true` frontmatter field, agent-skills spec coordination) follows in Phase 2 as separate contract.
+
+#### Invariants touched (per LESSONS doctrine #5)
+
+- ROADMAP §2 hard rule "destructive operations must never be overridden to `regular` even if approval fatigue mounts" is now enforced at the suggester layer, not just stated.
+- The `suggestOverrides()` return shape changed; library consumers (none beyond the harness today) need to read `.suggestions` instead of treating the result as an array.
+- The "transparency over silence" doctrine: filtered skills are surfaced with their matched pattern, not silently dropped. `--quiet` is opt-in.
+- Phase 2's `destructive: true` frontmatter field is forward-compatible: when added, the suggester will read it as primary signal and fall back to Phase 1 patterns for skills without it. No skill loses protection in the transition.
+
 ## [0.3.0] — 2026-05-05
 
 ### All five tracked design issues land — minor bump because two of them change behavior

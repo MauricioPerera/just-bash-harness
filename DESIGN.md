@@ -164,6 +164,34 @@ The override map is sometimes informally called an "escape hatch" because it let
 
 Categories the model claims are ignored; only categories the harness derives (or the user's override map dictates) reach the gate.
 
+#### Suggester blacklist for destructive skills (Phase 1, v0.3.x)
+
+`harness audit --suggest-overrides` reads the bank-level `db approval_stats` collection and proposes skills that the user has consistently approved as candidates for `policy.skills.overrides` promotion to `regular` (auto-allow). ROADMAP §2 hard rule: **destructive skills are never promoted to `regular` regardless of approval ratio**. Without this rule, a user who routinely approves `delete-workflow` for legitimate cleanup would eventually see the suggester propose auto-allowing it, and a future LLM-proposed deletion would execute without prompt — losing the human-in-the-loop guarantee for irreversible operations.
+
+Phase 1 ships in `src/approval-stats.ts` as a hard-coded pattern set, exported for transparency:
+
+| Pattern (case-insensitive) | Catches |
+|---|---|
+| `(^|[/-])delete-` | `delete-workflow`, `delete-user`, `pack/delete-record` |
+| `(^|[/-])drop-` | `drop-table`, `drop-database` |
+| `(^|[/-])rm-` | `rm-file`, `rm-recursive` |
+| `(^|[/-])force-` | `force-merge`, `force-push` |
+| `(^|[/-])nuke-` | `nuke-everything`, `nuke-cache` |
+| `(^|[/-])purge-` | `purge-logs`, `purge-queue` |
+| `(^|[/-])truncate-` | `truncate-table`, `truncate-log` |
+| `(^|[/-])wipe-` | `wipe-disk`, `wipe-config` |
+| `(^|[/-])destroy-` | `destroy-instance`, `destroy-cluster` |
+| `(^|[/-])prune-` | `prune-images`, `prune-volumes` |
+| `(^|[/-])batch-deactivate$` | `users/batch-deactivate` (tail-anchored) |
+
+Patterns anchor at start-of-string OR after a `/` or `-`, so they fire on fully-qualified IDs like `github.com/foo/pack/delete-workflow` without false-matching across word boundaries — `undelete-cache` does NOT match because `delete-` is preceded by a letter rather than a separator. This is the core false-positive guard.
+
+**Surfacing**: filtered skills appear in a separate `# skipped:` block under the suggester's YAML output, with the matching pattern attributed for each. `--quiet` suppresses the section. Default is verbose so users understand WHY a frequently-approved destructive skill never gets promoted (LESSONS doctrine #6 sub-clause C: ambiguity vs explicit deliberateness).
+
+**Scope**: this rule restricts NEW suggestions only. It does NOT remove existing override entries the user has manually added — `policy.skills.overrides["github.com/foo/delete-workflow"]: regular` still works. The user retains the right to keep their own override even if it would be flagged here. The blacklist is advisory at suggestion time, not retroactive enforcement.
+
+**Phase 2** (separate future contract): an explicit `destructive: true` frontmatter field in the agent-skills spec. The suggester will read it as the primary signal; the Phase 1 pattern set remains as the fallback for skills without that field. See `D:/repos/ailibro/CONTRACT-suggester-blacklist.md` for the full decision record (Option 1 + eventual Option 3 hybrid, recorded 2026-05-06).
+
 ### 3.4 `session`
 ```ts
 interface SessionStore {

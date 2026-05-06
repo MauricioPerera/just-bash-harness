@@ -31,6 +31,7 @@ import {
   createApprovalStatsStore,
   suggestOverrides,
   renderSuggestionsYaml,
+  renderSkippedSection,
   type ApprovalStatsStore,
 } from "./approval-stats.js";
 import { runRekey, cleanupBackups, parseDuration, type RekeyTarget } from "./rekey.js";
@@ -56,7 +57,7 @@ Usage:
   harness resume <sessionId>
   harness sessions
   harness audit <sessionId> [--limit N]
-  harness audit --suggest-overrides [--min-asks N] [--min-ratio R]
+  harness audit --suggest-overrides [--min-asks N] [--min-ratio R] [--quiet]
   harness skills list [--all]
   harness skills add <pack@version>
   harness search <query> [--topK N] [--budget N] [--kind <k>] [--session <id>]
@@ -731,11 +732,18 @@ const cmdAuditSuggestOverrides = async (args: Args): Promise<number> => {
   process.stdout.write(`# approval stats: ${all.length} skill(s) tracked\n`);
   process.stdout.write(`# threshold: min-asks=${minAsks} min-allow-ratio=${minAllowRatio}\n\n`);
 
-  const suggestions = suggestOverrides(all, { minAsks, minAllowRatio });
-  process.stdout.write(renderSuggestionsYaml(suggestions));
-  if (suggestions.length > 0) {
+  const result = suggestOverrides(all, { minAsks, minAllowRatio });
+  process.stdout.write(renderSuggestionsYaml(result.suggestions));
+  // --quiet suppresses the destructive-skill skipped section. Default is
+  // verbose so users understand WHY frequently-approved destructive skills
+  // never appear in the YAML block. See DESIGN §3.3 for the pattern list.
+  const quiet = args.flags.get("quiet") === true;
+  if (!quiet) {
+    process.stdout.write(renderSkippedSection(result.skipped));
+  }
+  if (result.suggestions.length > 0) {
     process.stderr.write(
-      `\n# ${suggestions.length} suggestion(s). Paste the block above into your policy YAML.\n`,
+      `\n# ${result.suggestions.length} suggestion(s). Paste the block above into your policy YAML.\n`,
     );
   }
   return 0;

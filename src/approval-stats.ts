@@ -142,6 +142,44 @@ export const createApprovalStatsStore = (
 
 // ─── suggester ─────────────────────────────────────────────────────────────
 
+/**
+ * Skills matching any of these patterns are NEVER suggested for promotion to
+ * `regular`, regardless of how often the user approves them. ROADMAP §2 hard
+ * rule: destructive ops keep the human-in-the-loop guarantee.
+ *
+ * Patterns anchor at start-of-string OR after a `/` or `-` so they fire on
+ * fully-qualified skill IDs like `github.com/foo/pack/delete-workflow`
+ * without false-matching across word boundaries (e.g. `undelete-cache` does
+ * NOT match because `delete-` is preceded by a letter, not a separator).
+ *
+ * Phase 1 (Option 1) decision recorded 2026-05-06 in
+ * `CONTRACT-suggester-blacklist.md`. Phase 2 will add an explicit
+ * `destructive: true` frontmatter field; this pattern set remains as the
+ * fallback for skills without that field. See DESIGN §3.3 for the rule and
+ * the user-visible pattern list.
+ */
+export const DESTRUCTIVE_SKILL_PATTERNS: readonly RegExp[] = [
+  /(^|[/-])delete-/i,
+  /(^|[/-])drop-/i,
+  /(^|[/-])rm-/i,
+  /(^|[/-])force-/i,
+  /(^|[/-])nuke-/i,
+  /(^|[/-])purge-/i,
+  /(^|[/-])truncate-/i,
+  /(^|[/-])wipe-/i,
+  /(^|[/-])destroy-/i,
+  /(^|[/-])prune-/i,
+  /(^|[/-])batch-deactivate$/i,
+];
+
+/** Returns the first pattern that matches the skillId, or null if none. */
+export const matchDestructivePattern = (skillId: SkillId): RegExp | null => {
+  for (const re of DESTRUCTIVE_SKILL_PATTERNS) {
+    if (re.test(skillId)) return re;
+  }
+  return null;
+};
+
 export interface SuggestOverridesOpts {
   /** Minimum total asks before a skill is eligible for suggestion. */
   minAsks?: number;
@@ -161,26 +199,65 @@ export interface OverrideSuggestion {
   suggested: "regular";
 }
 
+/** A skill that would have been suggested but was filtered by a hard rule
+ *  (currently: destructive-pattern blacklist). Surfaced so the user can see
+ *  WHY a frequently-approved skill never gets promoted. */
+export interface SkippedSuggestion {
+  skillId: SkillId;
+  ask_count: number;
+  allow_count: number;
+  deny_count: number;
+  ratio: number;
+  reason: "destructive";
+  /** Source of the matched pattern, for user-facing attribution. */
+  matchedPattern: string;
+}
+
+export interface SuggestOverridesResult {
+  suggestions: OverrideSuggestion[];
+  /** Skills that passed the ratio/asks gates but were excluded by the
+   *  destructive-pattern blacklist. Empty in the common case. */
+  skipped: SkippedSuggestion[];
+}
+
 /**
  * Pure function over loaded stats. Filters skills with high
  * (askedUser → allow) ratios and zero recent denies. Single deny resets:
  * if last_decision was "deny", the skill is excluded regardless of
  * historical ratio — the user has signaled this skill is not blanket-safe.
+ *
+ * Skills matching `DESTRUCTIVE_SKILL_PATTERNS` are NEVER suggested for
+ * promotion regardless of allow-ratio. They appear in `result.skipped`
+ * with the matching pattern attribution so the user understands why.
  */
 export const suggestOverrides = (
   stats: readonly ApprovalStat[],
   opts: SuggestOverridesOpts = {},
-): OverrideSuggestion[] => {
+): SuggestOverridesResult => {
   const minAsks = opts.minAsks ?? 5;
   const minRatio = opts.minAllowRatio ?? 0.95;
-  const out: OverrideSuggestion[] = [];
+  const suggestions: OverrideSuggestion[] = [];
+  const skipped: SkippedSuggestion[] = [];
   for (const s of stats) {
     if (s.last_decision === "deny") continue;
     if (s.ask_count < minAsks) continue;
     if (s.deny_count > 0) continue; // any historical deny disqualifies for now
     const ratio = s.ask_count === 0 ? 0 : s.allow_count / s.ask_count;
     if (ratio < minRatio) continue;
-    out.push({
+    const destructiveMatch = matchDestructivePattern(s.skillId);
+    if (destructiveMatch !== null) {
+      skipped.push({
+        skillId: s.skillId,
+        ask_count: s.ask_count,
+        allow_count: s.allow_count,
+        deny_count: s.deny_count,
+        ratio,
+        reason: "destructive",
+        matchedPattern: destructiveMatch.source,
+      });
+      continue;
+    }
+    suggestions.push({
       skillId: s.skillId,
       ask_count: s.ask_count,
       allow_count: s.allow_count,
@@ -189,9 +266,10 @@ export const suggestOverrides = (
       suggested: "regular",
     });
   }
-  // Stable ordering: most-asked first.
-  out.sort((a, b) => b.ask_count - a.ask_count);
-  return out;
+  // Stable ordering: most-asked first, in both lists.
+  suggestions.sort((a, b) => b.ask_count - a.ask_count);
+  skipped.sort((a, b) => b.ask_count - a.ask_count);
+  return { suggestions, skipped };
 };
 
 /** Render a paste-ready YAML snippet for the policy's `skills.overrides`. */
@@ -208,6 +286,24 @@ export const renderSuggestionsYaml = (
   for (const s of suggestions) {
     lines.push(
       `    "${s.skillId}": ${s.suggested}    # asks=${s.ask_count} allow=${s.allow_count} deny=${s.deny_count} ratio=${s.ratio.toFixed(2)}`,
+    );
+  }
+  return lines.join("\n") + "\n";
+};
+
+/** Render the "skipped because destructive" section. Empty string when
+ *  there are no skipped skills, so callers can concatenate unconditionally. */
+export const renderSkippedSection = (
+  skipped: readonly SkippedSuggestion[],
+): string => {
+  if (skipped.length === 0) return "";
+  const lines: string[] = [
+    "",
+    `# skipped: ${skipped.length} skill(s) excluded as destructive (hard rule, never auto-promoted)`,
+  ];
+  for (const s of skipped) {
+    lines.push(
+      `#   ${s.skillId}    # asks=${s.ask_count} allow=${s.allow_count} ratio=${s.ratio.toFixed(2)} pattern=/${s.matchedPattern}/`,
     );
   }
   return lines.join("\n") + "\n";
