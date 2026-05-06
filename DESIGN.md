@@ -115,37 +115,37 @@ function deriveCategory(
 ): DerivedCategory;
 ```
 
-Category is derived, not declared. The four precedence rules, **in order** (the first that matches returns and short-circuits the rest):
+Category is derived, not declared. The evaluation runs **four rules in strict precedence order**. The first rule that matches returns immediately and short-circuits all subsequent rules. Override is checked FIRST. Default `regular` is the LAST possible outcome.
 
-1. **Override (highest priority — escape hatch).** If `policy.skills.overrides[skill.id]` or `policy.skills.overrides[skill.shortId]` is set, return that category and stop. The override can map to `regular`, `explicit`, OR `prohibited` — it's not "auto-allow", it's "user has explicitly chosen the category for this skill, replacing the heuristics". This is checked FIRST so that a user who has audited a skill can fully short-circuit derivation; it is NOT a feedback loop or a post-hoc bypass.
+1. **Override (FIRST — short-circuits all other rules).** If `policy.skills.overrides[skill.id]` or `policy.skills.overrides[skill.shortId]` is set, return that category immediately. The signature gate, the capability heuristics, AND the default rule never execute. The override can map to `regular`, `explicit`, OR `prohibited` — it is the user's authoritative classification for this skill, NOT a fallback or last-resort bypass. A user who has audited a skill (whether to trust it more or distrust it more) writes an override entry; the harness then never re-derives that skill's category.
 
-2. **Signature gate over the union.** If `policy.signature.require_signed: true`, scan the union `[skill, ...chainSkills]`. If ANY one has `signatureStatus !== "valid"` (i.e. `unsigned`, `invalid`, OR `unverified` — three failure states, not just "invalid signature"), return `prohibited`. The reason record names which skill in the chain triggered (e.g. `chain:foo signature:unsigned`).
+2. **Signature gate over the union (SECOND — only if no override matched).** If `policy.signature.require_signed: true`, scan every skill in the union `[skill, ...chainSkills]`. If ANY has `signatureStatus !== "valid"`, return `prohibited`. The "not valid" check catches **three failure states**: `unsigned` (skill never validated), `invalid` (signature failed verification), and `unverified` (validation pending or skipped). All three trigger the gate. The diagram-friendly shorthand `!signed` elides this distinction; in code it's the three-state inequality. The reason record names which skill in the chain triggered (e.g. `chain:foo signature:unsigned`) so the approval prompt shows the cause.
 
-3. **Capability heuristics over the union.** Collect reasons across `[skill, ...chainSkills]`:
+3. **Capability heuristics over the union (THIRD — only if signature passed).** Scan every skill in the union `[skill, ...chainSkills]` for any of these triggers:
    - `network.length > 0` → escalate to `explicit`
    - `filesystem.length > 0` → escalate to `explicit`
    - `idempotent === false` → escalate to `explicit`
 
-   If any reasons collected, return `explicit` with all reasons attributed (`network:N` for the parent, `chain:foo network:N` for chain steps).
+   If any trigger fires for any skill in the union, return `explicit` with all reasons attributed (`network:N` for the parent, `chain:foo network:N` for chain steps).
 
-4. **Default: `regular`.**
+4. **Default `regular` (LAST — only if all other rules passed without firing).** All skills in the union are signed, all have empty `network[]`, all have empty `filesystem[]`, all have `idempotent: true`. Auto-allow under the default policy matrix.
 
-The harness uses inputs that all come from existing spec fields — no new fields required:
+The harness uses inputs that all come from existing spec fields — no new fields required. The signals table below is **also in evaluation order** (top to bottom = first-checked to last-checked):
 
-| Signal | Effect on category |
-|---|---|
-| `policy.skills.overrides[id]` or `[shortId]` is set | the override value wins (any of `regular | explicit | prohibited`) |
-| Any skill in `[parent, ...chains]` has `signatureStatus !== "valid"` AND `policy.signature.require_signed: true` | `prohibited` |
-| Any skill in `[parent, ...chains]` has `network[]` non-empty | escalate to `explicit` |
-| Any skill in `[parent, ...chains]` has `filesystem[]` non-empty | escalate to `explicit` |
-| Any skill in `[parent, ...chains]` has `idempotent === false` | escalate to `explicit` |
-| else | `regular` |
+| Order | Signal | Effect on category |
+|---|---|---|
+| 1st | `policy.skills.overrides[id]` or `[shortId]` is set | the override value wins (any of `regular | explicit | prohibited`); short-circuits |
+| 2nd | Any skill in `[parent, ...chains]` has `signatureStatus !== "valid"` (any of `unsigned`, `invalid`, `unverified`) AND `policy.signature.require_signed: true` | `prohibited` |
+| 3rd | Any skill in `[parent, ...chains]` has `network[]` non-empty | escalate to `explicit` |
+| 3rd | Any skill in `[parent, ...chains]` has `filesystem[]` non-empty | escalate to `explicit` |
+| 3rd | Any skill in `[parent, ...chains]` has `idempotent === false` | escalate to `explicit` |
+| 4th | else | `regular` |
 
 #### Chain step union (v0.2.3 — security fix)
 
-Pre-v0.2.3, `deriveCategory` evaluated only the parent's metadata. A parent skill that declared `chains[]` could silently smuggle privileged steps past the human approval prompt: a benign-looking parent (signed, idempotent, no network → category `regular` → auto-allow) declares a chain step pointing at a skill with `network: ["evil.com"]`, the user sees no prompt, the network call goes through. The runtime sandbox per-step still applied — but the human-in-the-loop gate was bypassed.
+**Every rule above except #1 (override) evaluates over the union, not just the parent.** Pre-v0.2.3, `deriveCategory` evaluated only the parent's metadata. A parent skill that declared `chains[]` could silently smuggle privileged steps past the human approval prompt: a benign-looking parent (signed, idempotent, no network → category `regular` → auto-allow) declares a chain step pointing at a skill with `network: ["evil.com"]`, the user sees no prompt, the network call goes through. The runtime sandbox per-step still applied — but the human-in-the-loop gate was bypassed.
 
-Since v0.2.3, the union over parent + every chain step closes that hole. The `derivedFrom` array tags chain-attributed reasons with `chain:<short-id>` so the approval prompt shows where each capability came from. See `LESSONS.md` doctrine #1.
+Since v0.2.3, every gate (signature, capabilities) scans `[parent, ...chainSkills]` as a single set. The `derivedFrom` array tags chain-attributed reasons with `chain:<short-id>` so the approval prompt shows where each capability came from. See `LESSONS.md` doctrine #1.
 
 #### Unknown chain step → synthetic worst-case
 
@@ -158,7 +158,11 @@ A `chains[]` entry whose `skill` identity is NOT resolvable in the bank (typo, m
 
 The union then forces `prohibited` regardless of policy permissiveness. This is a **defense-in-depth** layer — even if a user disables `require_signed` (e.g. via `--allow-unsigned` for development), the synthetic step's worst-case capabilities still escalate the category. Verified by the `unknown chain step still escalates when signature gate is off` test in `approval.test.ts`.
 
-Override map is the escape hatch for bad heuristics — not the model. Categories the model claims are ignored; only categories the harness derives (or the user's override map dictates) reach the gate.
+#### A note on terminology: override is FIRST, not "fallback"
+
+The override map is sometimes informally called an "escape hatch" because it lets the user override the heuristic derivation when they disagree with it. Despite the name, the override is **checked FIRST in the evaluation order**, not as a last-resort fallback. The user's explicit choice supersedes the signature gate, the capability heuristics, AND the default. The "escape" is from the heuristic ladder entirely, not from a single rule's outcome. Diagrams and renderings that interpret "escape hatch" as "evaluated last as fallback" are reading the metaphor literally rather than mechanically — the doctrine #6 sub-clause on locally-correct-but-globally-ambiguous prose names exactly this failure mode.
+
+Categories the model claims are ignored; only categories the harness derives (or the user's override map dictates) reach the gate.
 
 ### 3.4 `session`
 ```ts

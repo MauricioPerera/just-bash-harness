@@ -431,6 +431,38 @@ The case for paying that hour:
   explicit deliberateness statements**, or rendering tools will
   paper over the gap.
 
+- **Prose with locally-correct but globally-ambiguous
+  terminology.** A single phrase or metaphor can be technically
+  correct in its immediate context but, when read at the document
+  level by a non-context-holding reader, suggest the opposite of
+  what the prose intends. Numbered lists, ordering markers, and
+  precedence statements lose to repeated metaphorical framing if
+  the metaphor's everyday connotation contradicts the structural
+  claim. Concrete case from the second-iteration audit: DESIGN
+  §3.3 introduced the override map as `**Override (highest
+  priority — escape hatch)**` and reinforced "Override map is
+  the escape hatch" later in the section. "Highest priority"
+  numbered as #1 is unambiguous about evaluation order. But
+  "escape hatch" is a strong metaphor whose everyday meaning is
+  *"a way out used at the end when other options have failed"* —
+  i.e. a fallback. NotebookLM weighted the metaphor over the
+  ordinal and rendered a diagram with override as Gate 3 (after
+  signature and capability gates, before the default fallback).
+  Both readings are locally defensible from the prose; the
+  diagram's reading is wrong relative to the code. The general
+  rule: **when a metaphor's everyday connotation contradicts a
+  structural claim being made about the same concept, drop the
+  metaphor or qualify it inline with explicit anti-misreading
+  language.** In §3.3 this was fixed by making each rule's
+  numbered heading restate the position
+  (`(FIRST — short-circuits all other rules)`,
+  `(SECOND — only if no override matched)`, etc.) and adding a
+  dedicated subsection titled "A note on terminology: override
+  is FIRST, not 'fallback'" that names the failure mode by
+  reference to this doctrine. The cost of the inline restatement
+  is small; the cost of a structural misrendering surviving into
+  evaluator-facing diagrams is the sample case here.
+
 ### How to apply mechanically
 
 For per-commit:
