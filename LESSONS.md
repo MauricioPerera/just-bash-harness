@@ -410,6 +410,26 @@ The case for paying that hour:
   README architecture diagram was ~v0.1.4 vintage when fixed at
   v0.3.0+. Anything visual that hasn't been touched in two minor
   releases should be assumed stale until verified.
+- **Deliberate asymmetries between structurally similar features.**
+  Where two features look symmetric (two providers, two sinks, two
+  modes, two storage backends) but operate asymmetrically in some
+  dimension (test infrastructure, capability scope, default
+  behavior), document the asymmetry as **deliberate** in prose,
+  not just by absence of mention. Otherwise external rendering
+  tools will synthesize the missing half by symmetry —
+  hallucinating parity that does not exist. Concrete case from
+  the post-doctrine-#6 audit: a NotebookLM diagram of the testing
+  infrastructure produced a phantom "Anthropic (Opt-in)" live
+  smoke entry purely by symmetry with the real Cloudflare live
+  smoke. The rendering tool synthesized the entry because both
+  providers exist and one had a smoke; the absence of explicit
+  prose stating "no live Anthropic smoke and here's why" let the
+  hallucination through. Fixed in `TESTING.md` with a "Live LLM
+  smoke asymmetry" subsection that names the asymmetry as
+  deliberate and explains the reasoning. The general rule:
+  **structural symmetry plus operational asymmetry requires
+  explicit deliberateness statements**, or rendering tools will
+  paper over the gap.
 
 ### How to apply mechanically
 

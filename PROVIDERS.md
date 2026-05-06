@@ -39,6 +39,7 @@ The loop in [`src/loop.ts`](src/loop.ts) consumes events; tool calls go through 
 - Tool name: uses `skill.shortId` (a subset of Anthropic's allowed regex).
 - **AbortSignal** forwarded to the SDK's `messages.stream(params, requestOptions)` since `0.2.5`. Ctrl+C closes the upstream socket.
 - **Rate-limit / 429 handling**: the SDK does exponential-backoff-with-jitter on 429/5xx automatically. The harness inherits this behavior — no extra retry policy in our wrapper.
+- **No live smoke** (deliberate): the SDK is parsed by code Anthropic owns + tests; we don't reimplement its tests by running live calls from this repo. CF has a live smoke because that parser is ours. See `TESTING.md` "Live LLM smoke asymmetry" for the full reasoning.
 
 ### Cloudflare Workers AI ([`src/provider-cloudflare.ts`](src/provider-cloudflare.ts))
 

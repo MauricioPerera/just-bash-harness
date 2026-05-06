@@ -80,11 +80,24 @@ The unit suite uses Node's built-in test runner (`node --test`) with `tsx` as a 
 | End-to-end loop (live decisions) | `scratch/e2e-cf-driven.ts` | Real Gemma decisions captured via MCP connector replayed through full pipeline (FileBank → runExec → audit → db turns) |
 | FileBank + runQuery + runExec | `scratch/slice.ts` | Programmatic API, audit auto-write, separate `createBankBash` for sessions, `db export` round-trip |
 
+### Live LLM smoke asymmetry (deliberate, not an oversight)
+
+The repo has a live LLM smoke for Cloudflare (`scratch/e2e-cloudflare.ts`, opt-in via `npm run smoke:cf-live` with real `CF_ACCOUNT_ID + CF_API_TOKEN`). It does NOT have a live LLM smoke for Anthropic. **This asymmetry is deliberate, not a coverage gap waiting to be filled.**
+
+The reasoning:
+
+- **Cloudflare provider hand-rolls the SSE parser**. Every byte of the stream (chunk boundaries, CRLF, `delta.content` for inline `<tool_call>` tags, `delta.tool_calls` for OpenAI-compat shape, `delta.reasoning` for Gemma's chain-of-thought, finish_reason mapping) is parsed by code in `src/provider-cloudflare.ts`. A live test catches Cloudflare API behavior changes (e.g. a new field, a renamed `finish_reason` value, a streaming contract revision) that unit tests with stubbed SSE wouldn't see. The 49 unit tests cover the parser; the live smoke covers what we don't fully control.
+- **Anthropic provider delegates to the official SDK**. `client.messages.stream()` from `@anthropic-ai/sdk` does the parsing. Our code maps SDK events to TurnEvents — the surface area that can drift is the SDK's own event shape, which the SDK's own tests (run by Anthropic) cover. Re-running those tests via a live Anthropic call from our repo would test the SDK, not us. The 30 unit tests cover our mapping helpers; the SDK covers the rest.
+
+So: **CF gets a live smoke because the parser is ours; Anthropic doesn't because the parser is the SDK's.** External rendering tools that compare the two providers may synthesize a phantom "Anthropic live smoke (Opt-in)" by structural symmetry — that smoke does not exist and is not on the roadmap. Doctrine #6 in `LESSONS.md` calls out this synthesis-by-symmetry pattern explicitly.
+
+If a future provider also hand-rolls its parser (e.g. a hypothetical Mistral via raw fetch), it should ship with a live smoke matching the CF pattern. If it goes through a vendor SDK, it shouldn't.
+
 ### What's NOT unit-tested (deliberate)
 
 | Module | Reason |
 |---|---|
-| `provider-anthropic.ts` (full SDK stream parse) | Helpers (`buildMessages`, `buildTools`, `toInputSchema`, `mapStopReason`, `shortIdFromIdentity`, `toolNameOf`, `buildSystemParam`, `toolResultBlocks`) ARE unit-tested. The full `MessageStream` event-translation path (content_block_start / _delta / _stop sequences) is NOT mocked — driving the official SDK with synthetic SSE bodies is brittle to SDK updates. Construction + fetch failure surfacing IS covered. The remaining surface mirrors Cloudflare's; same shape, well-exercised by parallel tests. |
+| `provider-anthropic.ts` (full SDK stream parse) | Helpers (`buildMessages`, `buildTools`, `toInputSchema`, `mapStopReason`, `shortIdFromIdentity`, `toolNameOf`, `buildSystemParam`, `toolResultBlocks`) ARE unit-tested. The full `MessageStream` event-translation path (content_block_start / _delta / _stop sequences) is NOT mocked — driving the official SDK with synthetic SSE bodies is brittle to SDK updates. Construction + fetch failure surfacing IS covered. The remaining surface mirrors Cloudflare's; same shape, well-exercised by parallel tests. See "Live LLM smoke asymmetry" above for why there is also no live Anthropic smoke. |
 | `loop.ts` (`runTurn` orchestration) | Covered by integration: 5 `e2e.ts` scenarios exercise every branch (regular auto-allow, explicit ask→allow, explicit ask→deny, prohibited hard-deny, text-only termination) plus one Gemma-driven variant + the dedicated memory / compaction smokes. The pure helpers extracted from `runTurn` (`runCompactionSummary`, `synthesizeUnknownChainStep`) ARE unit-tested. |
 | `toolbox.ts` (`createToolbox`, `summarize`) | `applicable_when` filtering IS unit-tested in `toolbox.test.ts`. The remaining surface (runQuery + runExec round-trip with audit) is covered by integration via `slice.ts`. Mocking `FileBank` adequately is more code than the test would save. |
 | `session.ts` (`createSessionStore`, `restoreSnapshot`) | Covered by integration: `slice.ts` exercises the bash-backed `db sessions/turns/approvals insert/find/export`; `e2e.ts` exercises `appendTurn` + `load`; `e2e-cf-driven.ts` exercises the full round-trip post-loop. |
