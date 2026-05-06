@@ -41,14 +41,29 @@ A thin orchestrator (~4100 LOC TypeScript in `src/`, plus ~2400 LOC of unit test
 - A sandbox for untrusted user code. The user is trusted; the LLM and skills are not (see [DESIGN.md §2](DESIGN.md)).
 - A web UI. CLI / TTY only.
 
+## Install
+
+> ⚠️ **The npm package is `just-bash-harness` but the binary on PATH is `harness`.** This is an intentional asymmetry (npm's `bin` field controls the executable name independently of the package name). Every CLI invocation in this README, in DESIGN, and in CHANGELOG uses `harness <subcommand>` — never `just-bash-harness <subcommand>`. Diagram or summary tools that synthesize `just-bash-harness chat` from the package name are wrong.
+
+The canonical install for users:
+
+```bash
+npm install -g just-bash-harness    # installs the package globally
+harness --help                      # → bin name is `harness`, NOT `just-bash-harness`
+```
+
+If you prefer not to install globally:
+
+```bash
+npx just-bash-harness --help        # one-shot via npx (npm caches it)
+# … or invoke as: npx just-bash-harness chat <sessionId>
+```
+
+Both flows install the same package; only the invocation differs. Either way, when the binary runs, it's `harness`.
+
 ## Quickstart
 
 ```bash
-git clone <this-repo> harness
-cd harness
-npm install
-npm run build                                         # → dist/cli.js, dist/index.js
-
 # Pick a provider via env (auto-detected). Either of these works:
 export CF_ACCOUNT_ID=...   CF_API_TOKEN=...           # → Gemma 4 26B
 export ANTHROPIC_API_KEY=...                          # → claude-opus-4-7
@@ -57,14 +72,14 @@ export ANTHROPIC_API_KEY=...                          # → claude-opus-4-7
 export OLLAMA_MODEL=nomic-embed-text                  # or OPENAI_*, CF_*
 
 # Subscribe a skill pack (signed git tag enforced by default)
-node dist/cli.js skills add github.com/foo/bar@v1.0.0
+harness skills add github.com/foo/bar@v1.0.0
 
 # Run a chat turn
-SID=$(node dist/cli.js new)
-echo "say hi using the available tools" | node dist/cli.js chat "$SID"
+SID=$(harness new)
+echo "say hi using the available tools" | harness chat "$SID"
 
 # Resume later
-node dist/cli.js resume "$SID"
+harness resume "$SID"
 ```
 
 #### Working with unsigned skills (local development)
@@ -80,10 +95,16 @@ harness chat "$SID" --allow-unsigned --message "test the local skill"
 
 For a permanent override on a specific trusted skill, use `policy.skills.overrides[skill.id] = "regular" | "explicit"` in your policy YAML.
 
-### Install globally
+### Install for development (clone + link)
+
+If you're contributing to the harness itself (modifying `src/`, running tests, etc.), the development flow is:
 
 ```bash
-npm link                       # makes `harness` available on PATH
+git clone https://github.com/MauricioPerera/just-bash-harness.git
+cd just-bash-harness
+npm install
+npm run build                       # → dist/cli.js, dist/index.js
+npm link                            # makes `harness` available on PATH from the local clone
 harness --help
 ```
 
@@ -92,6 +113,8 @@ Or run directly through `tsx` during development without building:
 ```bash
 npx tsx src/cli.ts --help
 ```
+
+This flow is for hacking on the harness, not for everyday use. Most users want `npm install -g just-bash-harness` from the section above.
 
 ## Architecture in one diagram
 

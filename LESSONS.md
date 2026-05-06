@@ -417,19 +417,41 @@ The case for paying that hour:
   behavior), document the asymmetry as **deliberate** in prose,
   not just by absence of mention. Otherwise external rendering
   tools will synthesize the missing half by symmetry —
-  hallucinating parity that does not exist. Concrete case from
-  the post-doctrine-#6 audit: a NotebookLM diagram of the testing
-  infrastructure produced a phantom "Anthropic (Opt-in)" live
-  smoke entry purely by symmetry with the real Cloudflare live
-  smoke. The rendering tool synthesized the entry because both
-  providers exist and one had a smoke; the absence of explicit
-  prose stating "no live Anthropic smoke and here's why" let the
-  hallucination through. Fixed in `TESTING.md` with a "Live LLM
-  smoke asymmetry" subsection that names the asymmetry as
-  deliberate and explains the reasoning. The general rule:
-  **structural symmetry plus operational asymmetry requires
-  explicit deliberateness statements**, or rendering tools will
-  paper over the gap.
+  hallucinating parity that does not exist.
+
+  *Case A — Test infrastructure symmetry assumed.* A NotebookLM
+  diagram of the testing infrastructure produced a phantom
+  "Anthropic (Opt-in)" live smoke entry purely by symmetry with
+  the real Cloudflare live smoke. The rendering tool synthesized
+  the entry because both providers exist and one had a smoke; the
+  absence of explicit prose stating "no live Anthropic smoke and
+  here's why" let the hallucination through. Fixed in `TESTING.md`
+  with a "Live LLM smoke asymmetry" subsection that names the
+  asymmetry as deliberate and explains the reasoning.
+
+  *Case B — Package metadata vs binary name assumed identical.*
+  A NotebookLM Quickstart diagram rendered
+  `npm install -g just-bash-harness` (correct) followed by
+  `just-bash-harness chat --allow-unsigned` (WRONG — the bin is
+  `harness`, not `just-bash-harness`). The npm package's `bin`
+  field declares the executable name independently of the
+  package name, but the convention in many npm packages is
+  `name === bin`. NotebookLM defaulted to that convention and
+  produced an invocation the user could not run. The fix: README
+  now opens the install section with a callout explicitly stating
+  the asymmetry — *"the npm package is `just-bash-harness` but
+  the binary on PATH is `harness`"* — and every example invocation
+  uses `harness <subcommand>`, never the package name.
+
+  The general rule: **structural symmetry plus operational
+  asymmetry requires explicit deliberateness statements**, or
+  rendering tools will paper over the gap. This applies not only
+  to feature-level symmetries (two providers, two sinks) but also
+  to metadata-level conventions where the field names (package
+  name, bin name, image name, container name, service name) are
+  often-but-not-always identical. Whenever they're not identical,
+  state the asymmetry once at the canonical install/invocation
+  point and use the correct form everywhere else in prose.
 
 - **Prose with locally-correct but globally-ambiguous
   terminology.** A single phrase or metaphor can be technically
