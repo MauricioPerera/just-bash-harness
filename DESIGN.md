@@ -293,6 +293,76 @@ The pattern set is conservative (AWS access keys, GitHub tokens by all four pref
 
 The redact pass is a **transform**, not a gate — it does not block execution, it only sanitizes the result on its way to persistence. The approval gate is the only mechanism that blocks a tool call.
 
+#### Phase 1 (current) vs Phase 2 (deferred)
+
+Phase 1 (v0.3.0) is what's described above: a fixed conservative pattern set, applied uniformly to every `ToolResult`. Phase 2, deferred at issue-tracking time and not on the roadmap, would add:
+
+- `policy.redaction` config block for user-supplied additional patterns.
+- Per-skill opt-out (a skill that legitimately handles JWTs can declare it in frontmatter and bypass the scrubber).
+- Generic high-entropy patterns and env-style assignments (`KEY=value`), gated behind policy because the false-positive rate is too high without per-skill opt-out.
+
+Until Phase 2 lands, a skill returning legitimate secret material has its output redacted with no way to opt out.
+
+### 4.4 Encryption at rest
+
+**Opt-in.** Default `policy.encryption.enabled: false`. The harness ships unencrypted by default; the user must explicitly enable it AND provide a key.
+
+#### Mechanism
+
+- AES-256-GCM via `just-bash-data` (transitively, through `createBankBash` from `agent-skills-cli`).
+- Key read from the `HARNESS_ENCRYPTION_KEY` environment variable. **Never** stored in policy YAML, on disk, or in argv — when `policy.encryption.enabled: true` and the env var is missing, the harness throws at construction time with a clear message.
+- Optional salts (`policy.encryption.saltMemory`, `saltSession`) namespace the PBKDF2 derivation in just-bash-data. Defaults are used if absent. Salts must remain stable for the life of the bank — changing them is equivalent to changing the key (data becomes unreadable).
+
+#### Scope (asymmetric — important)
+
+Three banks exist; encryption coverage is **not** uniform:
+
+| Bank | Path | Encryption when `enabled: true`? |
+|---|---|---|
+| Sessions | `policy.paths.sessionsRoot/<sessionId>/` | **Yes** — `db sessions/turns/approvals` all encrypted |
+| Memory | `policy.memory.rootDir` | **Yes** — wiki `sources` collection encrypted |
+| Skills | `policy.paths.skillsBankDir` (default: agent-skills-cli's `defaultBankRoot()`) | **No** — `FileBank` does not take a key today; `db approval_stats` lives in plaintext alongside skill metadata |
+
+The asymmetry is a consequence of `FileBank` (skills) being a different code path from `createBankBash` (sessions + memory). A user who enables encryption expecting "everything at rest" should be aware that the skills bank — including the `approval_stats` collection added in v0.3.0 — is NOT covered. If/when the skills bank ever takes a key, `harness rekey --target skills` is already wired (see §4.5) to migrate `approval_stats` along with anything else stored there.
+
+#### One-way decision (without the rekey command)
+
+Per CHANGELOG `0.1.8`: changing the key (or salt) on an existing bank effectively re-keys it — existing data becomes unreadable. Pick a key once per scope and back it up, OR use `harness rekey` (§4.5) to migrate explicitly.
+
+### 4.5 Key rotation: `harness rekey`
+
+Closes the "one-way decision" caveat above (added in v0.3.0).
+
+#### Flow per bank dir
+
+```
+1. Construct two Bash instances: one with OLD key, one with NEW key.
+2. Export each known collection from OLD-key bank → JSON-lines tmp file.
+3. Initialize sibling staging dir <dir>.rekey-staging-<rand> with NEW key.
+4. Insert each doc from tmp file into staging dir.
+5. rename(<dir>, <dir>.rekey-backup-<ts>)
+6. rename(<dir>.rekey-staging-<rand>, <dir>)
+7. Delete tmp files. Backup left in place for user cleanup.
+```
+
+#### Invariants and limits
+
+- **Per-target collection lists are hardcoded.** `["sessions", "turns", "approvals"]` for sessions banks; `["sources"]` for memory; `["approval_stats"]` for skills. Adding a new collection requires updating `src/rekey.ts`. This is doctrine #4 territory ("duplicate facts will desynchronize") — `db` doesn't expose `--list-collections` today, so the alternative would be filesystem walk + heuristic.
+- **`--dry-run` does steps 1-2 only.** Validates that the OLD key correctly decrypts every collection without touching original storage. Does NOT validate that the NEW key would round-trip — for that, run a real (non-dry) rekey on a backup copy.
+- **mv → mv window is sub-second but NOT strictly atomic.** Between `rename(<dir>, backup)` and `rename(staging, <dir>)`, the original path doesn't exist for a brief moment. On local FS with journaling this is negligible; on NFS / fsync-deferred / network filesystems this could fail visibly.
+- **Concurrent process detection is best-effort, not a lock.** The command refuses to run if any target dir was modified <60s ago. This is a heuristic to catch "another `harness chat` is running"; it is NOT mutex enforcement. The only safe way to rekey is offline (no other harness invocations against the same bank).
+- **Stops on first error.** Remaining bank dirs stay encrypted with the old key (safe state — partial rekey is impossible). The user fixes the underlying issue and re-runs.
+- **Backups are kept indefinitely.** `<dir>.rekey-backup-<ts>` directories accumulate per rekey. User is responsible for cleanup AFTER verification that new key works.
+- **Keys must come from env vars.** `--from-env <varname>` and `--to-env <varname>`, never `--from <literal-key>`. Argv would expose keys via `ps`. The CLI explicitly rejects literal-key flags.
+
+#### Targets
+
+```
+harness rekey --from-env OLD --to-env NEW [--target sessions|memory|skills|all] [--dry-run]
+```
+
+`--target all` runs sessions → skills → memory in that order. `skills` is included for forward compatibility (no-op today since the skills bank doesn't encrypt) so a future move to encrypt the skills bank doesn't leave `approval_stats` orphaned.
+
 ---
 
 ## 5. Approval matrix
