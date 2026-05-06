@@ -48,7 +48,7 @@ const newSessionId = (): SessionId =>
   // Branded; the harness treats this as opaque.
   `s_${randomUUID().slice(0, 12)}` as SessionId;
 
-const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
+import { escSingle } from "./util-escape.js";
 const dbInsert = (
   bash: BashInstance,
   coll: string,

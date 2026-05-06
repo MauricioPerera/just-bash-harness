@@ -598,9 +598,23 @@ For per-commit:
 ```bash
 # After staging your feature changes
 SUBSYSTEM="approval"  # or "memory" / "encryption" / etc.
-git grep -i "$SUBSYSTEM" -- DESIGN.md README.md CHANGELOG.md
+git grep -i "$SUBSYSTEM" -- DESIGN.md README.md CHANGELOG.md CLAUDE.md LESSONS.md PROVIDERS.md TESTING.md
 # Read each hit; update any that no longer matches the code.
 ```
+
+The grep list above includes **every Markdown maintenance file in the
+repo root**, not just the canonical three. `CLAUDE.md` (maintainer
+guidance for future Claude Code sessions), `LESSONS.md` (this file),
+`PROVIDERS.md`, and `TESTING.md` all describe the project's state and
+will drift if not included. The `CLAUDE.md` case from issue #9
+demonstrated this empirically: the file went 5-6 minor releases
+out of date with six contradicted facts because the grep list as
+originally written excluded it.
+
+`LESSONS.md` itself is on the list — yes, the doctrine applies
+to its own file. If a doctrine references a feature that has since
+been renamed, refactored, or removed, the doctrine update is on the
+same per-commit grep checklist.
 
 For pre-release:
 

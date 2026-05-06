@@ -357,6 +357,27 @@ The asymmetry is a consequence of `FileBank` (skills) being a different code pat
 
 Per CHANGELOG `0.1.8`: changing the key (or salt) on an existing bank effectively re-keys it — existing data becomes unreadable. Pick a key once per scope and back it up, OR use `harness rekey` (§4.5) to migrate explicitly.
 
+#### What "becomes unreadable" actually looks like at runtime
+
+When `HARNESS_ENCRYPTION_KEY` changes between two invocations against the same bank without going through `harness rekey` first, the symptom is a **loud failure, not silent data corruption**. Specifically:
+
+- `db <coll> find` calls executed by the harness against the per-session bank (or memory bank) propagate the underlying `just-bash-data` decryption error as a non-zero exit code with stderr text from the AES-GCM authentication-tag mismatch.
+- The harness layer surfaces this as a session-load failure or memory-recall failure, depending on which code path triggered the read.
+- **The data on disk is intact.** Only the current key cannot decrypt it. Setting `HARNESS_ENCRYPTION_KEY` back to the original value restores access without requiring `harness rekey`.
+
+What this means operationally:
+
+- If you see "session not found" or "decryption failed" errors after changing your key environment variable, the first thing to check is `HARNESS_ENCRYPTION_KEY` — not whether the data is corrupt.
+- The harness does NOT silently return empty results for an encrypted bank read with the wrong key. It fails the read.
+- If the original key is genuinely lost (not just temporarily set to the wrong value), the data cannot be recovered. This is the design intent of AES-GCM at rest: lose the key, lose access. No backdoor.
+
+What the harness could do better but currently does not:
+
+- Wrap the `db` exit-code-3 + AES-tag-mismatch stderr with a more helpful CLI message that names `HARNESS_ENCRYPTION_KEY` explicitly. Today the user sees the raw error and has to know to check the env var.
+- Validate the key on the first read of a session (e.g. `harness resume <id>`) and surface "this session was encrypted with a different key" as a distinct error class from "session not found".
+
+Both improvements are tracked as deuda; see issue #16 for the planned wrapper.
+
 ### 4.5 Key rotation: `harness rekey`
 
 Closes the "one-way decision" caveat above (added in v0.3.0).

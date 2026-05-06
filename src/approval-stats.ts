@@ -22,7 +22,7 @@ type BashInstance = ReturnType<typeof createBankBash>;
 
 const COLLECTION = "approval_stats";
 
-const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
+import { escSingle } from "./util-escape.js";
 
 /** Per-skill counters as persisted. `last_decision` lets the suggester
  *  reset eligibility when a skill that was previously always-allowed

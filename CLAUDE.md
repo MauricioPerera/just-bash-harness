@@ -4,25 +4,30 @@ Guidance for future Claude Code sessions opening this repo.
 
 ## What this is
 
-`just-bash-harness` — single-agent loop on top of `just-bash` and the `agent-skills` ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers (Anthropic + Cloudflare Workers AI), cross-session memory via `just-bash-wiki`, optional AES-256-GCM at rest, retrieval bench with threshold gating.
+`just-bash-harness` — single-agent loop on top of `just-bash` and the `agent-skills` ecosystem. Sandboxed tool execution, derived approval gates (with chain-aware union since v0.2.3), persisted sessions, swappable LLM providers (Anthropic + Cloudflare Workers AI with retry/backoff), cross-session memory via `just-bash-wiki` (with optional rolling LLM summary at compaction since v0.3.0), opt-in AES-256-GCM at rest with `harness rekey` rotation, retrieval bench with threshold gating, secret redaction at persistence boundaries (Phase 1), and approval-fatigue metrics with `harness audit --suggest-overrides`.
 
-Built incrementally across versions v0.1.2 → v0.1.9 (see [CHANGELOG.md](CHANGELOG.md) for the per-release detail). The user is `Mauricio Perera`, who maintains the four upstream repos this harness integrates: `agent-skills`, `agent-skills-cli`, `just-bash-data`, `just-bash-wiki`.
+Built incrementally across versions v0.1.2 → v0.3.0 (see [CHANGELOG.md](CHANGELOG.md) for the per-release detail). The user is `Mauricio Perera`, who maintains the four upstream repos this harness integrates: `agent-skills`, `agent-skills-cli`, `just-bash-data`, `just-bash-wiki`.
+
+**Published**: as `just-bash-harness` on the npm registry since v0.2.5. The binary on PATH is named `harness` (not `just-bash-harness`) — see README's Install section for the package-vs-bin distinction.
+
+**Repo state**: `main` branch lives at https://github.com/MauricioPerera/just-bash-harness with full release history (tags v0.1.2 → v0.3.0), GitHub releases backfilled per tag, and an open issue tracker for post-v0.3.0 deuda.
 
 ## Read these first, in order
 
-1. **[README.md](README.md)** — what + how to install + minimal quickstart.
-2. **[DESIGN.md](DESIGN.md)** — layer contracts, turn protocol, approval matrix. Canonical truth for the architecture.
-3. **[CHANGELOG.md](CHANGELOG.md)** — historical context. Each version explains a specific design pivot.
-4. **[PROVIDERS.md](PROVIDERS.md)** — how to add a new LLM provider.
-5. **[TESTING.md](TESTING.md)** — coverage map, what's NOT unit-tested and why.
-6. **[COEVOLUTION.md](COEVOLUTION.md)** — upstream changes proposed; mostly cancelled because the spec already had what was needed.
+1. **[README.md](README.md)** — what + how to install + minimal quickstart (with `npm install -g just-bash-harness` flow + dev clone-and-link flow separated explicitly).
+2. **[DESIGN.md](DESIGN.md)** — layer contracts, turn protocol, approval matrix. Canonical truth for the architecture. Now includes §4.3 (redact pipeline), §4.4 (encryption at rest with opt-in callout), §4.5 (rekey), §6.3 (per-collection enumeration).
+3. **[CHANGELOG.md](CHANGELOG.md)** — historical context. Each version explains a specific design pivot. v0.2.5 → v0.2.6 has the tag/tarball alignment story; v0.3.0 has "Invariants touched" sections per feature (retro-applied per LESSONS doctrine #5).
+4. **[PROVIDERS.md](PROVIDERS.md)** — how to add a new LLM provider. Includes asymmetry table (CF retry hand-rolled vs Anthropic delegated to SDK).
+5. **[TESTING.md](TESTING.md)** — coverage map, what's NOT unit-tested and why. Includes "Live LLM smoke asymmetry" subsection explaining why CF has live smoke and Anthropic deliberately doesn't.
+6. **[LESSONS.md](LESSONS.md)** — operational doctrines distilled from real bugs. Six numbered doctrines as of v0.3.0 + post-publish audits, each anchored to a release that surfaced the pattern.
+7. **[COEVOLUTION.md](COEVOLUTION.md)** — upstream changes proposed; mostly cancelled because the spec already had what was needed.
 
 ## Local development
 
 ```bash
-npm install                          # ~5 min cold (file: deps to local siblings)
+npm install                          # ~5 min cold (deps from npm registry since v0.2.6)
 npm run typecheck                    # always green
-npm run test                         # 133/133, ~30-60s
+npm run test                         # 195/195 unit tests, ~30-60s
 npm run dev -- --help                # tsx, no build needed
 npm run build                        # tsup → dist/cli.js + dist/index.js
 node dist/cli.js --help              # built bin
@@ -31,20 +36,28 @@ node dist/cli.js --help              # built bin
 npm run smoke:slice                  # FileBank + runQuery + runExec
 npm run smoke:e2e                    # 5 approval scenarios scripted
 npm run smoke:cf-driven              # Gemma-replayed end-to-end
+npm run smoke:summarize-disabled     # regression guard for compaction.summarize=false
 
-# Smokes requiring live network/creds (manual)
+# Plus 5 more live-test smokes wired in CI:
+#   live-test-memory.ts          cross-session memory recall
+#   live-test-compaction.ts      history slicing under compaction
+#   live-test-encryption.ts      AES-256-GCM at rest verified at the bytes level
+#   live-test-chains.ts          chains (multi-skill orchestration)
+#   live-test-hermes.ts          Hermes <tool_call> parser via captured SSE replay
+
+# Smokes requiring live network/creds (manual, NOT in CI)
 npm run smoke:cf-live                # CF_ACCOUNT_ID + CF_API_TOKEN
 ```
 
 ## Conventions
 
-- **No emojis in code**. The user has feedback on this. Use plain prose in comments.
+- **No emojis in code**. The user has feedback on this. Use plain prose in comments. (Emojis in user-facing CLI output that the user explicitly asked for are fine.)
 - **Comments explain WHY**, not WHAT. Don't restate the code. Add comments only when the reader can't deduce intent from names + types.
 - **No dead code, no preemptive abstraction**. If a feature wasn't requested, don't add it. Delete unused code aggressively.
 - **TypeScript strict mode** with `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, `noImplicitOverride`. New code should typecheck without `any` casts.
 - **No `child_process`** anywhere in the harness — all skill execution goes through `runExec` which uses `just-bash` internally.
 - **Each persisted Turn is one user-message-to-end_turn cycle**. `appendTurn` is called once per `runTurn`. This makes history slicing safe (compaction).
-- **Single-quote escape for db/wiki commands**: `s.replace(/'/g, "'\\''")`. There's an `escSingle` helper in session.ts and memory.ts.
+- **Single-quote escape for db/wiki commands**: route through `src/util-escape.ts` exporting `escSingle`. Four modules use it (session, memory, approval-stats, rekey); after issue #10 they all import the same helper. See LESSONS doctrine #4.
 
 ## Repo layout (brief)
 
@@ -54,44 +67,55 @@ src/
   toolbox.ts                FileBank + runQuery + runExec + applicable_when filter
   session.ts                createBankBash-backed db sessions/turns/approvals
   memory.ts                 createWikiPlugin + ReadWriteFs persistent memory
-  approval.ts               deriveCategory + gate + TTY prompt
+  approval.ts               deriveCategory + gate + TTY prompt (chain-aware union)
+  approval-stats.ts         per-skill counters + suggester (issue #3 v0.3.0)
   policy.ts                 YAML loader + DEFAULT_POLICY
-  loop.ts                   turn orchestrator + memory recall/persist + compaction
+  policy-overrides.ts       --allow-unsigned + future per-invocation policy mutations
+  loop.ts                   turn orchestrator + memory recall/persist + compaction (slice + optional summary)
   provider.ts               factory + env auto-detect
-  provider-anthropic.ts     Anthropic Messages API adapter
-  provider-cloudflare.ts    Workers AI OpenAI-compat (Gemma 4 26B default)
+  provider-anthropic.ts     Anthropic Messages API adapter (SDK-delegated)
+  provider-cloudflare.ts    Workers AI OpenAI-compat with hand-rolled SSE + retry/backoff (Gemma 4 26B default)
+  redact.ts                 secret pattern scrubbing (Phase 1) at persistence boundaries
+  rekey.ts                  harness rekey command — encryption key rotation per bank
+  util-escape.ts            single source of truth for escSingle
   cli.ts                    entry point — bin: harness
   cli-args.ts               argv parser (extracted for testability)
   index.ts                  public library API
-  *.test.ts                 unit tests (cli-args, approval, policy, provider*,
-                            toolbox, memory) — 133 total
+  *.test.ts                 12 test files, 195 unit tests total (cli-args, approval,
+                            approval-stats, loop, policy, policy-overrides, provider,
+                            provider-anthropic, provider-cloudflare, redact, toolbox, memory)
 scratch/
   slice.ts                  smoke: FileBank + runExec + audit + db export
   e2e.ts                    smoke: 5 approval scenarios w/ scripted provider
   e2e-cf-driven.ts          smoke: real Gemma decisions replayed
   e2e-cloudflare.ts         opt-in: live CF (needs creds)
-  live-test*.ts             memory / compaction / encryption / pack smokes
+  live-test-*.ts            memory / compaction / encryption / chains / hermes /
+                            summarize-disabled smokes
   wiki-prototype.ts         reference for direct just-bash-wiki usage
-.github/workflows/ci.yml    typecheck + tests + build + 3 smokes
+.github/workflows/ci.yml    typecheck + tests + build + 9 smokes (every push, every PR)
 ```
 
 ## Things that look weird but are intentional
 
-1. **`file:../agent-skills-cli` in package.json** — the user owns the CLI; we depend on the local clone, not the published npm package. This means the sibling must be built (`npm run build` in `D:/repos/agent-skills-cli/`) before installing the harness.
-2. **`just-bash` and `just-bash-data` were removed from direct deps in v0.1.1** — they come transitively via `agent-skills-cli`. Then v0.1.5 added `just-bash` and `just-bash-wiki` back as direct deps because memory imports them. So `just-bash-data` is still transitive only.
-3. **TypeScript double-resolution of `Bash` type** — `file:` deps make TS see two distinct `Bash` types (one in agent-skills-cli's node_modules, one in our top-level just-bash). Workaround: don't import `Bash` directly in modules that use `createBankBash`; type by inference (`ReturnType<typeof createBankBash>`). See `session.ts`.
+1. **Package name `just-bash-harness`, bin name `harness`.** The npm package and the binary on PATH are deliberately different (npm `bin` field controls the executable name independently). All CLI examples use `harness <subcommand>`, not `just-bash-harness <subcommand>`. README opens with a callout stating this.
+2. **Registry semver for siblings since v0.2.6.** `package.json` resolves `@rckflr/agent-skills-cli@~2.3.0`, `just-bash@^2.14.3`, `just-bash-wiki@^1.2.1` from npm. Pre-v0.2.6 the harness used `file:../*` paths to local clones; that flow is preserved as the dev workflow only (see "Install for development" in README).
+3. **TypeScript double-resolution of `Bash` type** — pre-v0.2.6 (when `file:` deps were active) TS saw two distinct `Bash` types (one in agent-skills-cli's node_modules, one in our top-level just-bash). Workaround: don't import `Bash` directly in modules that use `createBankBash`; type by inference (`ReturnType<typeof createBankBash>`). See `session.ts`. Post-v0.2.6 with registry deps this is less of an issue but the workaround is preserved.
 4. **stub embedder warning is normal** — `resolveEmbedderFromEnv` throws when no provider creds are configured; the CLI catches and falls back to `createStubEmbedder`. The stderr line is intentional UX.
 5. **`harness audit` lazy-creates dirs FIX** — `session.load(id)` calls `stat()` before `bashFor(id)` to avoid creating empty bank dirs from typo'd ids. See v0.1.3 CHANGELOG.
 6. **memory uses ReadWriteFs explicitly** — without it, just-bash defaults to InMemoryFs and memories die on process exit. See v0.1.5 CHANGELOG.
-7. **CRLF warnings on git commit** are Windows line-ending normalization. Harmless.
+7. **REPL is interactive since v0.2.0**. `harness chat <id>` without `--message` opens a multi-turn read-eval-print loop with slash commands (`/help /audit /recall /memory /clear /exit`). One-shot mode is preserved via `--message <txt>` or piped stdin.
+8. **CRLF warnings on git commit** are Windows line-ending normalization. Harmless.
+9. **CI clones agent-skills-cli + just-bash-wiki as siblings** in `.github/workflows/ci.yml` and builds them before testing the harness, even though `npm ci` in the harness resolves from npm registry. Either vestigial from pre-v0.2.6 file:deps or an intentional sibling breakage detector — tracked in issue #13 for investigation.
 
 ## When the user says "adelante"
 
-It means "proceed with your recommendation". They've been delegating heavily across 9 versions. Two rules I learned from this conversation:
+It means "proceed with your recommendation". They've been delegating heavily across the v0.1 → v0.3 development cycle. Three rules:
 
 - **For features from the agreed roadmap**: yes, proceed. They've already opted in.
 - **For external actions (push, publish, modifying their repos)**: ALWAYS ask explicitly. "adelante" without a specific URL/destination is NOT permission for external action.
 - **For post-v0 features I'd be adding without prior discussion**: ask before going. Don't gold-plate.
+
+The user has approved (and explicitly invited) extensive iterative work via "adelante" patterns when an action plan has been proposed concretely first.
 
 ## Testing patterns
 
@@ -99,19 +123,50 @@ It means "proceed with your recommendation". They've been delegating heavily acr
 - **Each test must clean up**. Use `mkdtemp` for fixtures and `rm` in `try/finally`.
 - **Toy embedder** in `memory.test.ts` is the pattern for embedder-dependent tests without network.
 - **SpyProvider** in `live-test-memory.ts` and `live-test-compaction.ts` is the pattern for asserting on what a provider receives.
+- **Full `runTurn` is integration-tested via smokes**, not unit tests — too many moving parts (provider, toolbox, session, approval gate, memory) to mock cleanly without diluting signal. See `loop.test.ts`'s opening comment.
 
 ## Git conventions
 
 - Conventional commits with scope: `feat(toolbox):`, `feat(memory):`, `fix(...):`, `chore(...):`, `docs(...):`.
 - Co-author tag: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>` per session.
-- Tags on every release: `v0.1.X`. Annotated, with a one-line message.
-- `main` branch only so far. No remote yet.
+- Tags on every release: `v0.X.Y`. Annotated, with a one-line message.
+- `main` is the only branch. Pushed to `origin` (https://github.com/MauricioPerera/just-bash-harness).
 
 ## What's deliberately NOT done
 
-- No P9 (chains spec multi-skill orchestration). Discussed but deferred as post-v0.
-- No npm publish. Not pushed to any remote. The user holds those decisions.
-- No interactive REPL for `harness chat`. Each invocation is one-shot; multi-turn requires re-invoking with the same session id.
-- No multi-tenant. Single-user assumption is intact.
-- No multi-agent. Single-agent loop only.
-- No web UI.
+- No P9 (chains spec multi-skill orchestration beyond the v0.2.1 chains feature). Future enhancements to chains are post-v0 unless explicitly requested.
+- No multi-tenant. Single-user assumption is explicit and intentional, documented in README "Trade-offs that landed but still have caveats".
+- No multi-agent. Single-agent loop only. Multi-agent debate (LangGraph / CrewAI / AutoGen patterns) is out of scope by design.
+- No web UI. CLI / TTY / REPL only. CHANGELOG `0.2.0` discusses this explicitly.
+- No live Anthropic LLM smoke (deliberate — Anthropic SDK has its own tests). See `TESTING.md` "Live LLM smoke asymmetry" for the rationale.
+- No `harness rekey --cleanup-backups` command yet. Backup directories accumulate after rekey; cleanup is the user's job per current docs. Tracked in issue #15.
+- No formal v1 roadmap. CHANGELOG references "promote `createBankBash` to STABLE before v1.0" but nothing else is enumerated as v1-blocking.
+
+## Open issues (post-v0.3.0)
+
+After v0.3.0 the issue tracker bounced from 0 (closed at v0.3.0 release) back to 11+ open as the post-publish audit cycle (NotebookLM diagram rendering + source-faithful clone-and-read) surfaced documentation drift, coverage gaps, and small design polish opportunities. **All are tracked formally on GitHub** rather than in commit messages. See doctrine #6 in LESSONS.md for the audit pattern that produced them.
+
+The most security-critical open items:
+
+- **Issue #6** — End-to-end smoke for chain-union approval wiring. Re-prevents v0.2.3 bypass shape at the integration layer (current coverage is unit-only).
+- **Issue #7** — Sessions encryption smoke (parallel to existing memory smoke).
+- **Issue #8** — `rekey.ts` unit tests with stubbed `bashFactory`. Highest-blast-radius module currently has zero unit coverage.
+
+The smaller doctrinal items:
+
+- **Issue #9** — Doc drift sweep covering CLAUDE.md (this file), README LOC, policy.example.yaml, LESSONS.md self-apply.
+- **Issue #10** — Centralize `escSingle` (4 copies → 1 module).
+- **Issue #11** — `memory.ts` use `randomUUID` for title salt (consistency).
+- **Issue #12** — `tsup.config.ts` external symmetry.
+
+Investigation:
+
+- **Issue #13** — CI siblings build appears redundant given semver lockfile.
+
+Enhancements:
+
+- **Issue #14** — Bash instance lifecycle in long-running REPL sessions.
+- **Issue #15** — `harness rekey --cleanup-backups`.
+- **Issue #16** — Document encryption key silent-change failure mode in DESIGN §4.4.
+
+When you pick an issue from this list to work on, the file path + line number references in each issue body should give you the exact starting point. The LESSONS.md doctrines apply to any fix — particularly #2 (enumerate invariants touched in changelog), #6 (grep DESIGN/README/CHANGELOG/CLAUDE.md after the fix), and #4 (avoid creating new duplicate facts).

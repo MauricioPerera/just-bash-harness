@@ -85,7 +85,7 @@ const SESSION_COLLECTIONS = ["sessions", "turns", "approvals"] as const;
 const MEMORY_COLLECTIONS = ["sources"] as const;
 const SKILLS_COLLECTIONS = ["approval_stats"] as const;
 
-const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
+import { escSingle } from "./util-escape.js";
 
 const tmpJsonPath = (label: string): string =>
   join(tmpdir(), `harness-rekey-${label}-${randomUUID().slice(0, 8)}.json`);

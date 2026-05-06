@@ -25,7 +25,7 @@ These are not bugs — they are design points where the cheap thing landed and t
 
 ## What it is
 
-A thin orchestrator (~4100 LOC TypeScript in `src/`, plus ~2400 LOC of unit tests) that:
+A thin orchestrator (~5300 LOC TypeScript in `src/`, plus ~3100 LOC of unit tests — measure live with `find src -name '*.ts' ! -name '*.test.ts' | xargs wc -l`) that:
 
 - Runs a turn loop: prompt → tool calls → results → next turn → end.
 - Resolves tool calls to **agent-skills** subscribed in a local `FileBank`.

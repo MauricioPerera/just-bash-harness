@@ -8,6 +8,7 @@
 //   const hits = await memory.recall("how should I respond?", { topK: 3 });
 
 import { mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { Bash, ReadWriteFs } from "just-bash";
 import { createWikiPlugin } from "just-bash-wiki";
 import type { EmbeddingProvider } from "@rckflr/agent-skills-cli";
@@ -88,7 +89,7 @@ export interface MemoryStoreOpts {
   encryptionSalt?: string;
 }
 
-const escSingle = (s: string): string => s.replace(/'/g, "'\\''");
+import { escSingle } from "./util-escape.js";
 
 export const createMemoryStore = (opts: MemoryStoreOpts): Memory => {
   // The Bash instance type-resolves to whatever `just-bash` is in our
@@ -137,9 +138,11 @@ export const createMemoryStore = (opts: MemoryStoreOpts): Memory => {
       const b = await ensureBash();
       const ts = ropts.ts ?? new Date().toISOString();
       const kind = ropts.kind ?? "fact";
-      // Wiki requires unique source titles. Encode kind + ts + a short hash
-      // of the content to avoid collisions when called rapidly.
-      const titleSalt = (Math.random().toString(36).slice(2, 8));
+      // Wiki requires unique source titles. Encode kind + ts + a short
+      // randomUUID slice to avoid collisions when called rapidly.
+      // Uses node:crypto for consistency with the rest of the repo
+      // (session.ts, loop.ts, rekey.ts all use randomUUID for IDs).
+      const titleSalt = randomUUID().slice(0, 6);
       const title = ropts.title ?? `${kind}-${ts}-${titleSalt}`;
       const doc: Record<string, unknown> = {
         title,

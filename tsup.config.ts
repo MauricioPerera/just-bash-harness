@@ -21,6 +21,10 @@ export default defineConfig({
     // accidentally imports them directly during dev.
     "just-bash",
     "just-bash-data",
+    // just-bash-wiki is imported directly from src/memory.ts. tsup would
+    // treat it as external by default (it's in `dependencies`), but we list
+    // it explicitly here for symmetry with the others — see issue #12.
+    "just-bash-wiki",
     "yaml",
   ],
   dts: true,
