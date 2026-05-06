@@ -96,24 +96,44 @@ npx tsx src/cli.ts --help
 ## Architecture in one diagram
 
 ```
-┌──────────────────────────────────────────┐
-│  cli (TTY)                               │  user-facing
-├──────────────────────────────────────────┤
-│  loop                                    │  turn protocol
-├──────────────────────────────────────────┤
-│  provider   approval   session   policy  │  cross-cutting
-├──────────────────────────────────────────┤
-│  toolbox  ←  FileBank + runQuery/runExec │  skill resolution + execution
-└──────────────────────────────────────────┘
-                 │
-                 ▼
-   agent-skills-cli (handles per-skill sandbox)
-                 │
-                 ▼
-            just-bash + just-bash-data
+┌─────────────────────────────────────────────────────────────────┐
+│ cli (TTY / REPL / slash commands / harness rekey, audit, etc.)  │  user-facing
+├─────────────────────────────────────────────────────────────────┤
+│ loop                                                            │  turn protocol +
+│ (turn protocol · compaction · summary · AbortSignal · redact)   │   pipeline
+├──────────────┬──────────────┬──────────────┬───────────────────┤
+│ provider     │ approval gate│ memory       │ session           │  cross-cutting
+│ (Anthropic / │ (deriveCat·  │ (recall +    │ (db turns/        │   (one node
+│  CF Workers; │  override·   │  compaction- │  approvals/       │    each — not
+│  retry +     │  TTY prompt; │  summary;    │  approval_stats   │    "concerns")
+│  backoff)    │  chains-aware│  wiki-backed)│  per session)     │
+│              │  union)      │              │                   │
+├──────────────┴──────────────┴──────────────┴───────────────────┤
+│ toolbox (FileBank + runQuery + applicable_when filter +         │  skill bank +
+│          runExec → scrub-secrets → ToolResult)                  │   exec
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                      agent-skills-cli                                ← skills runtime
+              (runExec sandbox per skill ·
+               createBankBash for storage handles)
+                              │
+                              ▼
+                          just-bash                                   ← platform
+              (process isolation · FS scratch ·
+               network allowlist · env scoping ·
+               AES-256-GCM at rest)
+                              │
+                ┌─────────────┴─────────────┐
+                ▼                           ▼
+        just-bash-data              just-bash-wiki                    ← storage plugins
+        (db / vec engine            (page/source layer
+         under all banks)            backing memory)
 ```
 
 There is **no** `Sandbox` layer of our own. `runExec` already builds a per-skill sandboxed `just-bash` instance with the skill's declared `network` / `filesystem` / `required_env` constraints from the spec. Re-implementing that here would diverge from the canonical enforcement.
+
+The trust pipeline for every tool call is: **LLM → provider → loop → approval gate → toolbox → runExec (just-bash sandbox) → ToolResult → scrub-secrets → persistence (db turns + memory) → next provider call**. Tool stdout is untrusted at every step after `runExec` — DESIGN §2 makes this explicit, and `src/redact.ts` enforces it before persistence.
 
 See [DESIGN.md](DESIGN.md) for full layer contracts and [DESIGN.md §4](DESIGN.md) for the turn protocol.
 
