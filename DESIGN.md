@@ -154,23 +154,64 @@ The only stateful orchestrator. Owns the turn protocol (§4). Talks to all other
 
 A **turn** is one round-trip with the LLM. A **session** is a sequence of turns sharing one `Toolbox` and one session bash instance.
 
+The protocol has TWO loops: an outer loop that runs once per `runTurn` call (memory recall + compaction + persistence) and an inner loop that iterates while the model emits `tool_use` stop reasons.
+
 ```
-┌── turn N ──────────────────────────────────────────────┐
-│                                                         │
-│  (1) loop builds TurnInput from session history         │
-│  (2) provider.turn() yields events                      │
-│  (3) for each tool_call event:                          │
-│       a. resolved = toolbox.resolve-or-lookup           │
-│       b. category = deriveCategory(resolved, policy)    │
-│       c. action  = { skillId, category, args, intent }  │
-│       d. decision = approval.check(action)              │
-│       e. if 'ask' → prompt user, block until reply      │
-│       f. if 'allow' → toolbox.execute → ToolResult      │
-│       g. result appended to next TurnInput              │
-│  (4) on 'stop': appendTurn, optional snapshot           │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌── runTurn(sessionId, userMessage) ─────────────────────────────────┐
+│                                                                    │
+│  ── once per call ──────────────────────────────────────────────── │
+│  (1) load session; check maxTurns budget                           │
+│  (2) memory.recall(userMessage)        → memoryBlock                │
+│  (3) compaction (if memory.compaction.enabled):                    │
+│        a. slice session.turns to last windowSize → activeHistory   │
+│        b. if compaction.summarize.enabled AND turns dropped:       │
+│             extra provider.turn() with dropped turns               │
+│             → compactionSummaryBlock; persist as memory            │
+│             kind=compaction-summary                                │
+│  (4) build base TurnInput:                                         │
+│        systemPrompt = base + compactionSummaryBlock + memoryBlock  │
+│        history = activeHistory                                     │
+│                                                                    │
+│  ── inner loop: while stop_reason == "tool_use" ─────────────────── │
+│  (5) provider.turn(input, signal) yields events:                   │
+│        text → collected; thinking → collected;                     │
+│        tool_call → calls[] (rationale snapshotted at this moment); │
+│        stop → finalStop                                            │
+│  (6) for each tool_call:                                           │
+│        a. resolved = toolbox lookup by skill id                    │
+│        b. chainSkills = resolve declared chain steps               │
+│             (unknown identities → synthetic worst-case)            │
+│        c. category = deriveCategory(resolved, policy, chainSkills) │
+│        d. action = { skillId, category, args, rationale,           │
+│                      derivedFrom }                                 │
+│  (7) APPROVAL GATE:                                                │
+│        a. decision = approval.check(action)                        │
+│        b. if 'ask' → prompt user (TTY); fail-closed on             │
+│             non-TTY/EOF/signal                                     │
+│        c. if 'deny' → synthesize denial ToolResult                 │
+│             (with friendly remediation text when reason            │
+│             contains 'signature:')                                 │
+│        d. record decision in session approvals + bank-level        │
+│             approval_stats                                         │
+│  (8) if 'allow':                                                   │
+│        a. result = toolbox.execute(resolved, args, intent)         │
+│             → runExec → just-bash sandbox per skill                │
+│        b. scrubbed = scrubToolResult(result)                       │
+│             → secrets redacted before result reaches               │
+│             persistence or next provider call                      │
+│        c. push scrubbed into nextResults                           │
+│  (9) feed nextResults to step (5) as toolResults; iterate          │
+│                                                                    │
+│  ── once per call (after inner loop terminates) ───────────────── │
+│  (10) appendTurn(session, turn) — single persist per runTurn,      │
+│         keeps tool_use/tool_result pairing clean                   │
+│  (11) memory.remember(user + assistant text) if autoPersistTurns   │
+│         AND finalStop == "end_turn" AND length >= minMessageLength │
+│                                                                    │
+└────────────────────────────────────────────────────────────────────┘
 ```
+
+The outer loop is once-per-`runTurn`; only steps (5)-(9) repeat. Memory recall and compaction do not re-run between iterations — each `runTurn` is a complete user-message-to-end_turn cycle, with `appendTurn` called once at (10), which is what makes history slicing safe (no orphan tool_result blocks at compaction boundaries).
 
 ### 4.1 Persisted `Turn`
 ```ts
@@ -189,10 +230,29 @@ type Turn = {
 ```
 There is no `fsRef` field anymore — runExec's per-skill scratch is ephemeral by design. Persistent state lives in `db` collections inside the session bash, snapshotted via `db export`.
 
+`ToolResult.redacted?: number` (added in 0.3.0) records how many secret patterns the redact pass scrubbed from stdout/stderr. `undefined` means "not scrubbed" (legacy or pre-redact path); `0` means "scrubbed, found nothing"; `> 0` means matches happened. Audit queries that filter on redactions should use `>= 1`, not truthy.
+
 ### 4.2 Compaction
-**TBD.** v0: hard cap turns. Post-v0 candidates:
-- Rolling summary of older turns + raw last-N.
-- Ingest each turn as a `wiki source add`, then `wiki search` for context retrieval.
+
+Implemented across two releases. Configuration on `policy.memory.compaction`:
+
+- **Slice (v0.1.7)**: when `compaction.enabled` and `session.turns.length > windowSize`, the loop slices `session.turns` to the last `windowSize` entries before passing them as `input.history`. Dropped turns remain in `db turns` (full audit) AND in memory (auto-persisted as `kind: "turn"` records during their original `runTurn`). Recall covers them by similarity to the current user message.
+
+- **Rolling summary (v0.3.0, opt-in)**: when `compaction.summarize.enabled`, on each compaction event the harness makes an EXTRA `provider.turn()` call against the dropped turn block, asking for a structured digest ("user intent / decisions made and tools called with key outcomes / open threads"). The result is prepended to subsequent system prompts as `## Earlier conversation digest` and persisted to memory as `kind: "compaction-summary"`. Capped at `summarize.maxTokens` output and 50K chars input (with a `[... truncated for summary call ...]` marker if exceeded). The summary call uses `availableTools: []` so it cannot recurse.
+
+- **Strict-additive guarantee**: with `summarize.enabled: false`, behavior is byte-identical to v0.1.7 (slice + recall, no extra provider call, no compaction-summary memory). Guarded by the `smoke:summarize-disabled` regression check in CI.
+
+### 4.3 Trust pipeline for tool output
+
+Every `ToolResult` produced by `toolbox.execute` passes through `scrubToolResult` before reaching ANY persistence sink or the next provider call. The order of sinks is:
+
+1. `nextResults[]` in the inner loop → next `provider.turn()` as `tool_result` blocks (Anthropic) or role:tool messages (OpenAI-compat). The LLM never sees the raw token.
+2. `appendTurn` at (10) → `db turns` collection in the session bank. The audit trail never sees the raw token.
+3. `memory.remember` at (11) → wiki `sources` collection. Cross-session memory never sees the raw token.
+
+The pattern set is conservative (AWS access keys, GitHub tokens by all four prefixes, Slack `xox*-`, JWT triplet shape with 8-char floor, PEM private-key blocks). Tuned for low false-positive rate over typical skill output. Phase 2 (policy-driven config + per-skill opt-out) is documented as deferred but not implemented; for now, a skill that legitimately handles secret material has its output redacted.
+
+The redact pass is a **transform**, not a gate — it does not block execution, it only sanitizes the result on its way to persistence. The approval gate is the only mechanism that blocks a tool call.
 
 ---
 
