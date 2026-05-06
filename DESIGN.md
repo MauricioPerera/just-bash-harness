@@ -106,20 +106,59 @@ interface ApprovalGate {
 }
 
 // Pure function — no I/O. Inputs are existing spec fields.
-function deriveCategory(skill: ResolvedSkill, policy: Policy): ApprovalCategory;
+// Since v0.2.3: takes optional chain steps. Worst category over the
+// union [skill, ...chainSkills] wins.
+function deriveCategory(
+  skill: ResolvedSkill,
+  policy: Policy,
+  chainSkills?: readonly ResolvedSkill[],
+): DerivedCategory;
 ```
-Category is derived, not declared. Inputs the harness uses (all from existing spec fields):
+
+Category is derived, not declared. The four precedence rules, **in order** (the first that matches returns and short-circuits the rest):
+
+1. **Override (highest priority — escape hatch).** If `policy.skills.overrides[skill.id]` or `policy.skills.overrides[skill.shortId]` is set, return that category and stop. The override can map to `regular`, `explicit`, OR `prohibited` — it's not "auto-allow", it's "user has explicitly chosen the category for this skill, replacing the heuristics". This is checked FIRST so that a user who has audited a skill can fully short-circuit derivation; it is NOT a feedback loop or a post-hoc bypass.
+
+2. **Signature gate over the union.** If `policy.signature.require_signed: true`, scan the union `[skill, ...chainSkills]`. If ANY one has `signatureStatus !== "valid"` (i.e. `unsigned`, `invalid`, OR `unverified` — three failure states, not just "invalid signature"), return `prohibited`. The reason record names which skill in the chain triggered (e.g. `chain:foo signature:unsigned`).
+
+3. **Capability heuristics over the union.** Collect reasons across `[skill, ...chainSkills]`:
+   - `network.length > 0` → escalate to `explicit`
+   - `filesystem.length > 0` → escalate to `explicit`
+   - `idempotent === false` → escalate to `explicit`
+
+   If any reasons collected, return `explicit` with all reasons attributed (`network:N` for the parent, `chain:foo network:N` for chain steps).
+
+4. **Default: `regular`.**
+
+The harness uses inputs that all come from existing spec fields — no new fields required:
 
 | Signal | Effect on category |
 |---|---|
-| `provenance.signature_status !== 'valid'` AND policy requires signed | `prohibited` |
-| `network[]` non-empty | escalate to `explicit` |
-| `filesystem[]` non-empty | escalate to `explicit` |
-| `idempotent === false` AND skill writes outside `$AGENT_SCRATCH` | escalate to `explicit` |
-| skill id matches `policy.skills.overrides` | overridden value wins |
+| `policy.skills.overrides[id]` or `[shortId]` is set | the override value wins (any of `regular | explicit | prohibited`) |
+| Any skill in `[parent, ...chains]` has `signatureStatus !== "valid"` AND `policy.signature.require_signed: true` | `prohibited` |
+| Any skill in `[parent, ...chains]` has `network[]` non-empty | escalate to `explicit` |
+| Any skill in `[parent, ...chains]` has `filesystem[]` non-empty | escalate to `explicit` |
+| Any skill in `[parent, ...chains]` has `idempotent === false` | escalate to `explicit` |
 | else | `regular` |
 
-Override map is the escape hatch for bad heuristics — not the model.
+#### Chain step union (v0.2.3 — security fix)
+
+Pre-v0.2.3, `deriveCategory` evaluated only the parent's metadata. A parent skill that declared `chains[]` could silently smuggle privileged steps past the human approval prompt: a benign-looking parent (signed, idempotent, no network → category `regular` → auto-allow) declares a chain step pointing at a skill with `network: ["evil.com"]`, the user sees no prompt, the network call goes through. The runtime sandbox per-step still applied — but the human-in-the-loop gate was bypassed.
+
+Since v0.2.3, the union over parent + every chain step closes that hole. The `derivedFrom` array tags chain-attributed reasons with `chain:<short-id>` so the approval prompt shows where each capability came from. See `LESSONS.md` doctrine #1.
+
+#### Unknown chain step → synthetic worst-case
+
+A `chains[]` entry whose `skill` identity is NOT resolvable in the bank (typo, missing dependency, malicious crafted reference) is synthesized by `loop.ts` as a worst-case ResolvedSkill before being passed to `deriveCategory`:
+
+```ts
+{ ...parent, id: stepId, signatureStatus: "unsigned",
+  network: ["*"], filesystem: ["*"], idempotent: false }
+```
+
+The union then forces `prohibited` regardless of policy permissiveness. This is a **defense-in-depth** layer — even if a user disables `require_signed` (e.g. via `--allow-unsigned` for development), the synthetic step's worst-case capabilities still escalate the category. Verified by the `unknown chain step still escalates when signature gate is off` test in `approval.test.ts`.
+
+Override map is the escape hatch for bad heuristics — not the model. Categories the model claims are ignored; only categories the harness derives (or the user's override map dictates) reach the gate.
 
 ### 3.4 `session`
 ```ts
@@ -258,18 +297,25 @@ The redact pass is a **transform**, not a gate — it does not block execution, 
 
 ## 5. Approval matrix
 
-Three categories, derived per §3.3. Decisions made *before* execution.
+Three categories, derived per §3.3. Decisions made *before* execution. **Every "When (derived)" row evaluates over the union `[parent, ...chainSkills]`** — see §3.3 for why.
 
 | Category | When (derived) | Default policy |
 |---|---|---|
-| **Prohibited** | Unsigned skill while `require_signed: true`, or override map says so | Hard deny. Logged. |
-| **Explicit** | Network access, filesystem access outside scratch, non-idempotent writes, or override | Prompt user. Single-use approval. |
-| **Regular** | Pure read/compute inside scratch, idempotent, signed | Auto-allow. Audit only. |
+| **Prohibited** | Any skill in `[parent, ...chains]` has `signatureStatus !== "valid"` while `require_signed: true`, OR override map maps the skill to `prohibited`, OR a chain step references an unknown skill identity (synthesized worst-case) | Hard deny. Logged in session approvals + bank-level approval_stats. |
+| **Explicit** | Any skill in `[parent, ...chains]` has `network[]` non-empty OR `filesystem[]` non-empty OR `idempotent: false`, OR override map maps the skill to `explicit` | Prompt user (TTY); single-use approval. Fail-closed on non-TTY/EOF/signal. |
+| **Regular** | All skills in `[parent, ...chains]` are signed AND have empty `network[]` AND empty `filesystem[]` AND `idempotent: true`, OR override map maps the skill to `regular` | Auto-allow. Recorded in audit + approval_stats. |
 
 ### 5.1 Escalation rules
+- **Worst category over the union wins.** A clean parent does not absolve a privileged chain step; a privileged parent does not get auto-promoted by clean chain steps. The category that is most restrictive in the union is the category applied.
+- **Chain step union is mandatory, not optional.** Pre-v0.2.3 the harness evaluated only the parent — that was the bypass closed by issue #1 of the v0.2.2 external review. See `LESSONS.md` doctrine #1 ("audit prior invariants when adding orchestration") for the doctrine derived.
+- **Override is checked FIRST and short-circuits.** If `policy.skills.overrides[skill.id]` (or `[skill.shortId]`) is set, that category wins and the heuristics never run. The override can map to any of the three categories — including `prohibited`, useful for explicitly distrusting a skill.
 - A skill cannot self-promote category — derivation is on the harness side.
-- An LLM message claiming "user already approved X" without a chat-side approval record is rejected.
-- Approval is per-session, per-action. No "always allow" in v0.
+- An LLM message claiming "user already approved X" without a chat-side approval record is rejected. The `rationale` field on `PendingAction` is LLM-supplied and shown to the user verbatim, but is **never** interpreted by the harness as authorization.
+- Approval is per-session, per-action. No "always allow" in v0. The `approval_stats` collection (v0.3.0) tracks ask/allow/deny rates per skill so the user can decide to add an override entry; this is a user action, not an automatic promotion.
+
+### 5.2 Defense in depth: --allow-unsigned
+
+The `--allow-unsigned` CLI flag (v0.2.7) flips `policy.signature.require_signed` to `false` for the current invocation. This is intended as a development escape hatch — unsigned local skills then fall through to the capability heuristics instead of being blocked at the signature gate. **Critically, the chain step union still applies.** A chain step with `network: ["*"]` still escalates the union to `explicit` (TTY prompt) even when the signature gate is off. Verified by the `unknown chain step still escalates when signature gate is off (capability path)` test in `approval.test.ts`. The flag is not a global "disable all gates" — the capability dimensions are independent.
 
 ---
 
@@ -296,7 +342,7 @@ There is no in-memory `MountableFs` to design — the CLI handles it per skill.
 | D2 | Provider | Anthropic only. Pluggable interface. |
 | D3 | Approval UX | TTY default; host can inject custom `ApprovalGate`. |
 | D4 | Session storage | `createBankBash` on a separate session dir; one bank per session. |
-| D5 | Compaction | Hard turn cap. RAG-based compaction post-v0. |
+| D5 | Compaction | Slice + memory recall (v0.1.7); optional rolling LLM summary (v0.3.0). See §4.2. |
 | D6 | Skill subscription | Explicit only. `harness skills add <pack@vX>` invokes `runSync`. |
 | D7 | Telemetry | `bank.listAudit()` is the audit. OTEL post-v0. |
 | D8 | Sandbox abstraction | **None.** `runExec` is the boundary. (Was an explicit layer in v0.1; killed after slice.) |
