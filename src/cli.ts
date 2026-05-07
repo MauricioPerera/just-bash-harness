@@ -37,6 +37,7 @@ import {
 } from "./approval-stats.js";
 import { runRekey, cleanupBackups, parseDuration, type RekeyTarget } from "./rekey.js";
 import { detectEncryptionError, wrapEncryptionError } from "./util-encryption-error.js";
+import { runSkillInit } from "./skill-init.js";
 import { resolveProviderFromEnv } from "./provider.js";
 import { loadPolicy, DEFAULT_POLICY } from "./policy.js";
 import { runTurn } from "./loop.js";
@@ -63,6 +64,7 @@ Usage:
   harness audit --suggest-overrides [--min-asks N] [--min-ratio R] [--quiet]
   harness skills list [--all]
   harness skills add <pack@version>
+  harness skill init <name> [--dir <path>] [--pack] [--no-subscribe] [--force]
   harness search <query> [--topK N] [--budget N] [--kind <k>] [--session <id>]
   harness recall <query>              (alias for search)
   harness memory list [--kind <k>] [--limit N]
@@ -108,6 +110,13 @@ Examples:
   # Subscribe a skill pack and use it
   harness skills add github.com/foo/bar@v1.0.0
   echo "use the foo skill" | harness chat "$SID"
+
+  # Scaffold a brand-new local skill, register it with the bank, then
+  # invoke during dev with --allow-unsigned (signing happens later when
+  # the skill graduates to a pack and the user publishes with a signed
+  # tag — see CONTRACT-skill-init-command.md for the workflow.)
+  harness skill init my-skill
+  harness do "use my-skill" --allow-unsigned
 
   # Force Anthropic, override model
   HARNESS_PROVIDER=anthropic harness chat "$SID" \\
@@ -867,6 +876,79 @@ const cmdSkillsAdd = async (args: Args): Promise<number> => {
   return 0;
 };
 
+const cmdSkillInit = async (args: Args): Promise<number> => {
+  // `skill init <name>` → positional[0]="init", positional[1]=<name>
+  const name = args.positional[1];
+  if (!name || typeof name !== "string" || name.trim().length === 0) {
+    process.stderr.write(
+      "harness skill init: <name> required. Example: harness skill init my-skill\n",
+    );
+    return 64;
+  }
+
+  const dirFlag = args.flags.get("dir");
+  const dir = typeof dirFlag === "string" ? dirFlag : undefined;
+  const pack = args.flags.get("pack") === true;
+  const noSubscribe = args.flags.get("no-subscribe") === true;
+  const force = args.flags.get("force") === true;
+  const authorFlag = args.flags.get("author");
+  const authorName = typeof authorFlag === "string" ? authorFlag : undefined;
+
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = await loadPolicyOrDefault(policyPath);
+  const embedder = resolveEmbedderOrStub();
+  const bank = await ensureBank(policy, embedder);
+
+  const result = await runSkillInit(
+    {
+      name,
+      ...(dir !== undefined ? { dir } : {}),
+      pack,
+      noSubscribe,
+      force,
+      ...(authorName !== undefined ? { authorName } : {}),
+    },
+    { bank, embedder },
+  );
+
+  process.stdout.write(`scaffolded ${result.init.mode} at ${result.init.root}\n`);
+  if (result.init.files_written.length > 0) {
+    process.stdout.write(
+      `  written: ${result.init.files_written.length} file(s)\n`,
+    );
+    for (const f of result.init.files_written) {
+      process.stdout.write(`    ${f}\n`);
+    }
+  }
+  if (result.init.files_skipped.length > 0) {
+    process.stderr.write(
+      `  skipped (already exist; pass --force to overwrite): ${result.init.files_skipped.length} file(s)\n`,
+    );
+  }
+  if (result.subscribed) {
+    process.stdout.write(`subscribed to bank as: ${result.identity}\n`);
+    process.stderr.write(
+      "# signature_status: unsigned. Run with --allow-unsigned during dev;\n" +
+        "# sign at publish-time when this skill moves into a pack and you tag a release.\n",
+    );
+  } else if (noSubscribe) {
+    process.stderr.write(
+      "# --no-subscribe: skipped FileBank registration. Use 'harness skills add' once published.\n",
+    );
+  } else if (result.init.mode === "pack") {
+    process.stderr.write(
+      "# pack mode: scaffolded a multi-skill pack. Author skills inside, publish, then 'harness skills add'.\n",
+    );
+  }
+  if (result.init.next_steps.length > 0) {
+    process.stderr.write("\nnext steps:\n");
+    for (const step of result.init.next_steps) {
+      process.stderr.write(`  - ${step}\n`);
+    }
+  }
+  return 0;
+};
+
 const cmdResume = async (args: Args): Promise<number> => {
   const sessionId = args.positional[0] as SessionId | undefined;
   if (!sessionId) {
@@ -1573,6 +1655,20 @@ const main = async (argv: readonly string[]): Promise<number> => {
           return 64;
         default:
           process.stderr.write(`unknown skills subcommand: ${args.positional[0]}\n`);
+          return 64;
+      }
+    case "skill":
+      // Singular form is reserved for authoring subcommands (init etc.) so
+      // it doesn't crowd `harness skills <list|add>` which is about
+      // already-authored packs. Mirrors the agent-skills CLI's split.
+      switch (args.positional[0]) {
+        case "init":
+          return withCommandError("skill init", args, () => cmdSkillInit(args));
+        case undefined:
+          process.stderr.write("usage: harness skill <init>\n");
+          return 64;
+        default:
+          process.stderr.write(`unknown skill subcommand: ${args.positional[0]}\n`);
           return 64;
       }
     default:

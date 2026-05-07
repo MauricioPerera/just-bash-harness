@@ -4,6 +4,25 @@ Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` 
 
 ## [Unreleased]
 
+### `harness skill init <name>` — local-skill scaffolder (ROADMAP §2 #2, issue #19 Phase 1)
+
+Reduces skill authoring from a multi-step manual process (write frontmatter, validate, sync, debug) to a single command. Pre-flight cleared 2026-05-06: `@rckflr/agent-skills-cli@~2.3.0` exposes `runInit`, `FileBank.upsertSkill`, `parseSkillSource`, and `composeEmbeddingText` — every primitive needed for Path A. No upstream coordination required.
+
+- New subcommand: `harness skill init <name> [--dir <path>] [--pack] [--no-subscribe] [--force] [--author <name>]`. Singular `skill` reserved for authoring; existing `harness skills <list|add>` (plural) is for subscribed-pack management. Mirrors the agent-skills CLI's split.
+- New module `src/skill-init.ts` with `runSkillInit(opts, deps)` — pure-ish orchestration entry point. Three steps: (1) delegate scaffold to `runInit`, (2) read scaffolded SKILL.md, compute embedding via `composeEmbeddingText` + `embedder.embed`, (3) `FileBank.upsertSkill` with synthetic provenance. Pack mode and `--no-subscribe` short-circuit step 3.
+- **No `--no-sign` flag, no per-skill signing.** The pre-flight finding: per-skill gitsign is a category error against the spec's signing model (pack-level GPG-signed annotated git tags via `runPublish --tag --sign`). Local-init skills register as `signature_status: "unsigned"`; the user opts in via `--allow-unsigned` during dev; signing happens at pack-publish time when the skill graduates upstream. CLI surfaces this in stderr after registration: "Run with --allow-unsigned during dev; sign at publish-time when this skill moves into a pack."
+- Synthetic provenance for local skills: `{ source_type: "git", source: "local:<absolute-path>", ref_resolved_to: "dev", signature_status: "unsigned" }`. The `local:` URI prefix is the disambiguator until upstream extends `SkillProvenance.source_type` to include `"local"` (filed as soft follow-up, not blocking).
+- 8 new integration tests in `src/skill-init.test.ts` using real `runInit` + real `FileBank` under `mkdtemp` + toy embedder (same pattern as `memory.test.ts`). Coverage: scaffold + subscribe happy path, `signature_status: "unsigned"` pin, `local:` provenance pin, embedding model name plumbed through, `--no-subscribe`, `--pack` mode, `--force` re-scaffold, id roundtrip frontmatter→bank.
+- HELP text gains the new entry + a worked example pairing `harness skill init` with `harness do --allow-unsigned` for the local-development flow.
+- `package.json` test scripts include the new test file.
+- 258/258 tests pass (was 250). Typecheck clean. Build clean.
+
+#### Invariants touched (per LESSONS doctrine #5)
+
+- **`harness skill init` deliberately does NOT sign.** Anyone reviewing this who expected gitsign-per-skill should read `D:/repos/ailibro/CONTRACT-skill-init-command.md` § Pre-flight outcome for the rationale. The corrected mental model is two-stage: dev locally with `--allow-unsigned`, sign at pack-publish time upstream.
+- **Synthetic provenance lies about `source_type`.** Local skills register with `source_type: "git"` (because that's the only allowed enum value today) and `source: "local:<path>"`. The `local:` URI prefix is the truth-bearer; the enum value is a typing constraint. When upstream extends the enum, the harness switches in lockstep — there's exactly one site to update (`buildIndexedSkill` in `skill-init.ts`).
+- **`runInit` writes to `<root>/skills/<name>/SKILL.md`, not `<root>/SKILL.md`.** `buildIndexedSkill` reads the path off `init.files_written` to stay robust to layout changes upstream. If a future `runInit` version moves the skill dir, this commit's lookup keeps working without harness-side changes.
+
 ### `harness do "<task>"` — one-shot ops mode (ROADMAP §3 #1, issue #21)
 
 Removes the `SID=$(harness new); echo task | harness chat "$SID"` friction for the operator use case. A single command runs a one-off task end-to-end, persists the audit trail, and exits.
