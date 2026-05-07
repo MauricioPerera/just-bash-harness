@@ -172,7 +172,7 @@ Enhancements:
 
 Roadmap-driven contracts (post-v0.3.0, tracked in `D:/repos/ailibro/CONTRACT-*.md` + GitHub issues #17–#26):
 
-- **Issue #17–#22** — READY (or READY-pending-pre-flight) implementation contracts spanning provider plumbing, retrieval bench shape, signed-skills-only mode, observability metrics, packaging polish, and CI sibling-build investigation. Pick by the `Pre-flight` block at the top of each contract.
+- **Issue #17–#22** — READY (or READY-pending-pre-flight) implementation contracts spanning provider plumbing, retrieval bench shape, signed-skills-only mode, observability metrics, packaging polish, and CI sibling-build investigation. Pick by the `Pre-flight` block at the top of each contract. **#18 shipped 2026-05-06 commit `10d0687`** (encryption error wrapping). **#21 shipped 2026-05-06 commit `c6253fa`** (`harness do <task>` one-shot mode). **#19 pre-flight cleared 2026-05-06** — Path A viable, no upstream coordination required; revised scope drops the gitsign-per-skill ask (category error against the spec's pack-level signing model). See `CONTRACT-skill-init-command.md` § Pre-flight outcome.
 - **Issue #23** — Suggester pattern blacklist. **READY for Phase 1** (decided 2026-05-06: Option 1 + Option 3 hybrid — pattern-based filter ships now, frontmatter `destructive: true` field follows in Phase 2). See `CONTRACT-suggester-blacklist.md`.
 - **Issue #24** — MCP provider adapter. **DEFERRED** until at least one curated skills pack ships, per maintainer prioritization 2026-05-06.
 - **Issue #25** — `harness rekey` lockfile + atomic move. **DEFERRED** to the implementation window; decision is straightforward but doesn't block the agentic flow today.
