@@ -152,37 +152,21 @@ The user has approved (and explicitly invited) extensive iterative work via "ade
 
 ## Open issues (post-v0.3.0)
 
-After v0.3.0 the issue tracker bounced from 0 (closed at v0.3.0 release) back to 11+ open as the post-publish audit cycle (NotebookLM diagram rendering + source-faithful clone-and-read) surfaced documentation drift, coverage gaps, and small design polish opportunities. **All are tracked formally on GitHub** rather than in commit messages. See doctrine #6 in LESSONS.md for the audit pattern that produced them.
+The post-v0.3.0 cleanup queue (#6 through #16, ~11 issues spanning chain-approval smoke, sessions encryption smoke, `rekey.ts` unit tests, doc drift, escSingle centralization, randomUUID consistency, CI siblings investigation, REPL bash-lifecycle, `harness rekey --cleanup-backups`, encryption-key silent-change docs) **was fully closed in earlier sessions**. Don't re-open issues #6-#16 — they each have a closing commit referenced from the issue body.
 
-The most security-critical open items:
+The currently-open work is the **roadmap-driven contracts in `D:/repos/ailibro/CONTRACT-*.md`**, tracked as GitHub issues #17–#26. State as of 2026-05-06 after the agentic cycle that processed #18, #19, #21, #23 Phase 1, #26, plus partial drift sweep on #9:
 
-- **Issue #6** — End-to-end smoke for chain-union approval wiring. Re-prevents v0.2.3 bypass shape at the integration layer (current coverage is unit-only).
-- **Issue #7** — Sessions encryption smoke (parallel to existing memory smoke).
-- **Issue #8** — `rekey.ts` unit tests with stubbed `bashFactory`. Highest-blast-radius module currently has zero unit coverage.
+| Issue | Title | State |
+|---|---|---|
+| #17 | Repositioning — operator narrative as primary framing | 🟢 READY (needs maintainer voice for prose) |
+| #18 | Encryption error wrapping (CLI side) | ✅ shipped commit `10d0687`; issue stays open until next release tag |
+| #19 | `harness skill init` scaffolder + 'first skill in 5 min' guide | ✅ Phase 1 shipped commit `4fa1551`; issue stays open until next release tag. Pre-flight outcome: Path A viable, no upstream coordination — see `CONTRACT-skill-init-command.md` § Pre-flight outcome. The "5-min guide" doc deliverable is residual (separate sub-task). |
+| #20 | Curated `ops-essentials@v1` skill pack (15-20 signed skills) | 🟢 Phase 0 (curation) landed in `D:/repos/ailibro/CONTRACT-ops-essentials-skills-list.md` proposing 16 specific skills; authoring phase pending maintainer (needs GPG key, repo creation decisions, real Linux host for smokes). NOT autonomous work. |
+| #21 | `harness do <task>` — one-shot ops mode | ✅ shipped commit `c6253fa`; issue stays open until next release tag |
+| #22 | `n8n-ops@v1` pack (REST CRUD + MCP path 2 validation case) | 🟢 READY (depends soft on #20 authoring phase) |
+| #23 | Suggester blacklist for destructive skills | ✅ Phase 1 shipped commit `5bfac8c` (Option 1 + Option 3 hybrid; pattern blacklist in `approval-stats.ts`). Phase 2 (`destructive: true` frontmatter field upstream) is separate eventual contract. Issue stays open until next release tag. |
+| #24 | MCP provider as second-class citizen | 🟡 DEFERRED until at least one curated skills pack ships, per maintainer prioritization 2026-05-06 |
+| #25 | `harness rekey` lockfile mutex + atomic promote | 🟡 DEFERRED to the implementation window per maintainer prioritization |
+| #26 | Skills bank encryption decision | ✅ Path B (deliberate asymmetry, no implementation) decided + docs shipped commit `980ca1d`. Issue stays open as a trail; maintainer can close after next release tag. |
 
-The smaller doctrinal items:
-
-- **Issue #9** — Doc drift sweep covering CLAUDE.md (this file), README LOC, policy.example.yaml, LESSONS.md self-apply.
-- **Issue #10** — Centralize `escSingle` (4 copies → 1 module).
-- **Issue #11** — `memory.ts` use `randomUUID` for title salt (consistency).
-- **Issue #12** — `tsup.config.ts` external symmetry.
-
-Investigation:
-
-- **Issue #13** — CI siblings build appears redundant given semver lockfile.
-
-Enhancements:
-
-- **Issue #14** — Bash instance lifecycle in long-running REPL sessions.
-- **Issue #15** — `harness rekey --cleanup-backups`.
-- **Issue #16** — Document encryption key silent-change failure mode in DESIGN §4.4.
-
-Roadmap-driven contracts (post-v0.3.0, tracked in `D:/repos/ailibro/CONTRACT-*.md` + GitHub issues #17–#26):
-
-- **Issue #17–#22** — READY (or READY-pending-pre-flight) implementation contracts spanning provider plumbing, retrieval bench shape, signed-skills-only mode, observability metrics, packaging polish, and CI sibling-build investigation. Pick by the `Pre-flight` block at the top of each contract. **#18 shipped 2026-05-06 commit `10d0687`** (encryption error wrapping). **#21 shipped 2026-05-06 commit `c6253fa`** (`harness do <task>` one-shot mode). **#19 pre-flight cleared 2026-05-06** — Path A viable, no upstream coordination required; revised scope drops the gitsign-per-skill ask (category error against the spec's pack-level signing model). See `CONTRACT-skill-init-command.md` § Pre-flight outcome.
-- **Issue #23** — Suggester pattern blacklist. **READY for Phase 1** (decided 2026-05-06: Option 1 + Option 3 hybrid — pattern-based filter ships now, frontmatter `destructive: true` field follows in Phase 2). See `CONTRACT-suggester-blacklist.md`.
-- **Issue #24** — MCP provider adapter. **DEFERRED** until at least one curated skills pack ships, per maintainer prioritization 2026-05-06.
-- **Issue #25** — `harness rekey` lockfile + atomic move. **DEFERRED** to the implementation window; decision is straightforward but doesn't block the agentic flow today.
-- **Issue #26** — Skills bank encryption. **DECIDED 2026-05-06 — Path B** (documentation-only). See entry in "What's deliberately NOT done" above.
-
-When you pick an issue from this list to work on, the file path + line number references in each issue body should give you the exact starting point. The LESSONS.md doctrines apply to any fix — particularly #2 (enumerate invariants touched in changelog), #6 (grep DESIGN/README/CHANGELOG/CLAUDE.md after the fix), and #4 (avoid creating new duplicate facts).
+When you pick a 🟢 READY issue to work on, the file path + line number references in each issue body and the linked CONTRACT-*.md should give you the exact starting point. The LESSONS.md doctrines apply to any fix — particularly #2 (enumerate invariants touched in changelog), #6 (grep DESIGN/README/CHANGELOG/CLAUDE.md after the fix), and #4 (avoid creating new duplicate facts).
