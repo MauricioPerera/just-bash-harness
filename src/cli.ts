@@ -13,6 +13,7 @@
 
 import { join } from "node:path";
 import { mkdir, readdir, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 
 import {
   FileBank,
@@ -54,6 +55,7 @@ const HELP = `harness — agentic harness on just-bash (v${HARNESS_VERSION})
 
 Usage:
   harness new [--policy <path>]
+  harness do "<task>" [--policy <path>] [--model <id>] [--allow-unsigned] [--quiet]
   harness chat <sessionId> [--message <txt> | --interactive | -i] [--model <id>] [--allow-unsigned]
   harness resume <sessionId>
   harness sessions
@@ -94,6 +96,10 @@ Other env vars:
                             (required when policy.encryption.enabled: true)
 
 Examples:
+  # One-shot ops invocation — ephemeral session, single turn, audit kept
+  harness do "what is my disk usage?"
+  harness do "list files modified in /tmp in the last hour" --quiet
+
   # Bootstrap with default policy and one turn
   SID=$(harness new)
   echo "what is 2+2?" | harness chat "$SID"
@@ -311,6 +317,158 @@ const cmdNew = async (args: Args): Promise<number> => {
   process.stdout.write(`${id}\n`);
   process.stderr.write(`session created at ${join(sessionsRoot, id)}\n`);
   return 0;
+};
+
+/** Build the oneshot session ID. Format: `oneshot/onesht_<unix-ts>_<short>`.
+ *  The leading `oneshot/` literal is the audit-trail breadcrumb that lets
+ *  `harness sessions` and `harness audit` recognize ephemeral sessions
+ *  without ambiguity. The bare ID after the slash uses an `onesht_`
+ *  prefix (intentionally not `s_`) so a future migration that drops the
+ *  subdir layout can still distinguish IDs by prefix alone. */
+const newOneshotSessionId = (): SessionId => {
+  // randomUUID is ESM-imported transitively via session.ts but cli.ts
+  // doesn't import it directly. Pull from node:crypto here.
+  const ts = Math.floor(Date.now() / 1000);
+  // 6 hex chars = 16M space; collision risk over the lifetime of one
+  // user's history is negligible.
+  const short = randomUUID().replace(/-/g, "").slice(0, 6);
+  return `oneshot/onesht_${ts}_${short}` as SessionId;
+};
+
+const cmdDo = async (args: Args): Promise<number> => {
+  const task = args.positional[0];
+  if (!task || typeof task !== "string" || task.trim().length === 0) {
+    process.stderr.write(
+      "harness do: <task> required. Example: harness do \"what is my disk usage?\"\n",
+    );
+    return 64;
+  }
+
+  // Mirrors cmdChat's one-shot path. Kept as a separate function rather
+  // than refactoring through cmdChat because the ephemeral-session
+  // semantics (auto-create + no resume + oneshot subdir) are clearer
+  // expressed standalone than as a third mode flag inside cmdChat.
+  const policyPath = resolvePolicyPath(args.flags);
+  const policy = applyPolicyOverrides(
+    await loadPolicyOrDefault(policyPath),
+    args.flags,
+  );
+  const embedder = resolveEmbedderOrStub();
+  const bank = await ensureBank(policy, embedder);
+  await ensureSessionsRoot(policy);
+  const sessionStore = buildSessionStore(policy);
+  const toolbox = createToolbox({ bank, embedder });
+  const approvalStats = buildApprovalStatsStore(policy);
+  const approval = createApprovalGate({
+    policy,
+    audit: async (record) => {
+      const askedUser = record.source === "user";
+      await approvalStats.record(record.action.skillId, record.decision, askedUser);
+    },
+  });
+  const memory = await buildMemoryIfEnabled(policy, embedder);
+
+  const modelOverride = args.flags.get("model");
+  let provider: ReturnType<typeof resolveProviderFromEnv>;
+  try {
+    provider = resolveProviderFromEnv({
+      ...(typeof modelOverride === "string" ? { model: modelOverride } : {}),
+    });
+  } catch (err) {
+    process.stderr.write(`${(err as Error).message}\n`);
+    return 78;
+  }
+
+  const sessionId = newOneshotSessionId();
+  await sessionStore.create({
+    policyPath: policyPath ?? "<default>",
+    sessionRoot: policy.paths.sessionsRoot,
+    customId: sessionId,
+  });
+
+  const quiet = args.flags.get("quiet") === true;
+  if (!quiet) {
+    process.stderr.write(`[provider: ${provider.choice} / ${provider.model}]\n`);
+    process.stderr.write(`[oneshot session: ${sessionId}]\n`);
+    if (memory) {
+      process.stderr.write(`[memory: enabled at ${policy.memory.rootDir}]\n`);
+    }
+  }
+
+  // SIGINT handling — first press cancels, second hard-exits. Same shape
+  // as cmdChat so the operator's mental model is identical.
+  const controller = new AbortController();
+  let interruptCount = 0;
+  const onSigint = (): void => {
+    interruptCount++;
+    if (interruptCount === 1) {
+      process.stderr.write(
+        "\n[SIGINT — finishing current provider event then stopping; press Ctrl+C again to force]\n",
+      );
+      controller.abort();
+    } else {
+      process.stderr.write("\n[double SIGINT — hard exit]\n");
+      process.exit(130);
+    }
+  };
+  process.on("SIGINT", onSigint);
+
+  try {
+    const turn = await runTurn(
+      {
+        provider: provider.provider,
+        toolbox,
+        approval,
+        session: sessionStore,
+        policy,
+        ...(memory ? { memory } : {}),
+      },
+      {
+        sessionId,
+        userMessage: task,
+        signal: controller.signal,
+        handlers: {
+          // --quiet suppresses streaming text/thinking/tool-call events
+          // but keeps approval prompts and the final result. Errors and
+          // final status still go to stderr unconditionally.
+          ...(quiet
+            ? {}
+            : {
+                onText: (delta: string) => process.stdout.write(delta),
+                onThinking: (delta: string) => process.stderr.write(delta),
+                onToolCall: (id: string, skillId: string) => {
+                  process.stderr.write(`\n[tool_call ${id} → ${skillId}]\n`);
+                },
+              }),
+          onApprovalAsk: promptUserApproval,
+        },
+      },
+    );
+
+    const stop = turn.output.stopReason;
+    const toolCalls = turn.output.toolCalls.length;
+
+    // In quiet mode the assistant text wasn't streamed; print the final
+    // text now so scripted callers get a single output blob.
+    if (quiet) {
+      const finalText = turn.output.text ?? "";
+      if (finalText.length > 0) {
+        process.stdout.write(finalText);
+        if (!finalText.endsWith("\n")) process.stdout.write("\n");
+      }
+    } else {
+      process.stdout.write(`\n[stop: ${stop}]\n`);
+      if (toolCalls > 0) {
+        process.stderr.write(
+          `[turn ${turn.id} ran ${toolCalls} tool call(s)]\n`,
+        );
+      }
+    }
+
+    return stop === "error" ? 1 : stop === "cancelled" ? 130 : 0;
+  } finally {
+    process.removeListener("SIGINT", onSigint);
+  }
 };
 
 const REPL_HELP = `
@@ -779,24 +937,51 @@ const cmdSessions = async (args: Args): Promise<number> => {
   const entries = await readdir(sessionsRoot, { withFileTypes: true });
   const dirs = entries.filter((e) => e.isDirectory() && e.name.startsWith("s_"));
 
-  if (dirs.length === 0) {
+  // Oneshot sessions live under <sessionsRoot>/oneshot/onesht_<ts>_<short>.
+  // Enumerate that subdir if it exists so users see ephemeral sessions
+  // alongside regular ones, but tagged so they're distinguishable.
+  type Entry = { id: string; mtime: Date; oneshot: boolean };
+  const regulars: Entry[] = await Promise.all(
+    dirs.map(async (d) => {
+      const path = join(sessionsRoot, d.name);
+      const s = await stat(path);
+      return { id: d.name, mtime: s.mtime, oneshot: false };
+    }),
+  );
+  let oneshots: Entry[] = [];
+  const oneshotRoot = join(sessionsRoot, "oneshot");
+  try {
+    const oneshotEntries = await readdir(oneshotRoot, { withFileTypes: true });
+    const oneshotDirs = oneshotEntries.filter(
+      (e) => e.isDirectory() && e.name.startsWith("onesht_"),
+    );
+    oneshots = await Promise.all(
+      oneshotDirs.map(async (d) => {
+        const path = join(oneshotRoot, d.name);
+        const s = await stat(path);
+        // Display the full audit-trail-friendly id (with the oneshot/ prefix)
+        // so users can paste it into `harness audit` directly.
+        return { id: `oneshot/${d.name}`, mtime: s.mtime, oneshot: true };
+      }),
+    );
+  } catch (err) {
+    // ENOENT = no oneshot/ subdir created yet. Silent fallthrough.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
+  const withStats: Entry[] = [...regulars, ...oneshots];
+  if (withStats.length === 0) {
     process.stderr.write(`no sessions under ${sessionsRoot}\n`);
     return 0;
   }
 
   // Sort newest first by mtime.
-  const withStats = await Promise.all(
-    dirs.map(async (d) => {
-      const path = join(sessionsRoot, d.name);
-      const s = await stat(path);
-      return { id: d.name, mtime: s.mtime };
-    }),
-  );
   withStats.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
   process.stderr.write(`# ${withStats.length} session(s) under ${sessionsRoot}\n`);
   for (const e of withStats) {
-    process.stdout.write(`${e.id}  ${e.mtime.toISOString()}\n`);
+    const tag = e.oneshot ? " [oneshot]" : "";
+    process.stdout.write(`${e.id}  ${e.mtime.toISOString()}${tag}\n`);
   }
   return 0;
 };
@@ -1333,6 +1518,8 @@ const main = async (argv: readonly string[]): Promise<number> => {
       return cmdVersion();
     case "new":
       return withCommandError("new", args, () => cmdNew(args));
+    case "do":
+      return withCommandError("do", args, () => cmdDo(args));
     case "chat":
       return withCommandError("chat", args, () => cmdChat(args));
     case "resume":

@@ -4,6 +4,26 @@ Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` 
 
 ## [Unreleased]
 
+### `harness do "<task>"` — one-shot ops mode (ROADMAP §3 #1, issue #21)
+
+Removes the `SID=$(harness new); echo task | harness chat "$SID"` friction for the operator use case. A single command runs a one-off task end-to-end, persists the audit trail, and exits.
+
+- New subcommand: `harness do "<task>" [--policy <path>] [--model <id>] [--allow-unsigned] [--quiet]`. Reuses every existing flag from `harness chat`; only difference is the ephemeral session lifecycle.
+- Sessions land under `<sessionsRoot>/oneshot/onesht_<unix-ts>_<short>/` with id `oneshot/onesht_<ts>_<short>`. The `oneshot/` literal is the audit-trail breadcrumb so `harness audit oneshot/onesht_…` and `harness sessions` can recognize ephemeral sessions without ambiguity.
+- `harness sessions` now enumerates the oneshot subdir alongside regular sessions. Oneshots are tagged with ` [oneshot]` in the listing so they're visually distinct.
+- `--quiet` suppresses streaming text/thinking/tool-call events. The final assistant text still prints to stdout for scripted callers; SIGINT and approval prompts still surface unconditionally. Useful for `harness do "..." --quiet | jq` style pipelines.
+- `SessionOpts` gains an optional `customId?: SessionId` field. `sessionStore.create()` uses it instead of generating a fresh `s_<uuid>` when set. Internal additive change; no existing call site affected.
+- 6 new argv-parsing tests in `cli-args.test.ts` covering: simple task, task + `--quiet`, task + `--model` + `--policy`, task + `--allow-unsigned`, task containing `--`-prefixed words inside the quoted segment, and the no-task error path.
+- HELP text gains the new entry + a worked example as the lead operator-friendly invocation.
+- 250/250 tests pass (was 244, +6 new). Typecheck clean. Build clean.
+
+#### Invariants touched (per LESSONS doctrine #5)
+
+- `SessionOpts` is now `{ policyPath, sessionRoot, customId? }`. The new field is optional, so existing callers (cmdNew, future callers) compile and behave unchanged. No public-API break.
+- Session IDs may now contain a `/` character (`oneshot/onesht_…`). `session.ts` already used `join(root, id)` which handles slashes correctly across platforms; the change is contained. No code path treats SessionId as a single filesystem-safe token elsewhere — verified by grep.
+- `harness sessions` output gains a ` [oneshot]` suffix on ephemeral entries. Programmatic consumers parsing the list output should expect this trailing token, but existing scripts that just take the first whitespace-separated field still work.
+- The contract's soft dependency on `CONTRACT-repositioning.md` (issue #17) for messaging consistency is partially satisfied: a worked `harness do` example lands in HELP. Full README repositioning remains tracked under #17 and lands when that contract is taken on.
+
 ### CLI: wrap AES-GCM key-mismatch errors with `HARNESS_ENCRYPTION_KEY` hint (ROADMAP §4 P1a #1, issue #16 implementation side)
 
 `harness audit`, `harness chat`, `harness memory list`, and the other read-side commands previously surfaced raw `Unsupported state or unable to authenticate data` (or similar AES-GCM tag-mismatch text) when the user opened an encrypted bank with the wrong `HARNESS_ENCRYPTION_KEY`. Accurate but cryptic — users routinely concluded the bank was corrupt and filed bug reports. The implementation side of harness issue #16 (the documentation side closed v0.3.0) now wraps these errors at the CLI layer with an actionable message that names the env var explicitly and points at `harness rekey` for intentional rotation.

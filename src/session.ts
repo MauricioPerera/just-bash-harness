@@ -85,7 +85,10 @@ export const createSessionStore = (opts: SessionStoreOpts): SessionStore => {
 
   return {
     async create(createOpts: SessionOpts): Promise<SessionId> {
-      const id = newSessionId();
+      // customId path is used by `harness do` to land sessions under
+      // `<root>/oneshot/<id>`. mkdir({ recursive: true }) handles the
+      // intermediate dir creation either way.
+      const id = createOpts.customId ?? newSessionId();
       const dir = sessionDir(opts.sessionsRoot, id);
       await mkdir(dir, { recursive: true });
 

@@ -182,6 +182,15 @@ export interface SessionOpts {
   policyPath: string;
   /** Where to put the session bank dir. Required. */
   sessionRoot: string;
+  /**
+   * Optional caller-supplied session ID. When set, `create()` uses this
+   * value instead of generating a fresh `s_<uuid>`. Used by `harness do`
+   * to pre-pend the oneshot/ subdir prefix so the resulting bank dir
+   * lands under `<sessionsRoot>/oneshot/<id>` and the audit trail is
+   * distinguishable from regular sessions. The caller is responsible
+   * for uniqueness; the store does NOT check for collision today.
+   */
+  customId?: SessionId;
 }
 
 export interface Session {
