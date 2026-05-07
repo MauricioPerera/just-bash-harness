@@ -35,6 +35,7 @@ import {
   type ApprovalStatsStore,
 } from "./approval-stats.js";
 import { runRekey, cleanupBackups, parseDuration, type RekeyTarget } from "./rekey.js";
+import { detectEncryptionError, wrapEncryptionError } from "./util-encryption-error.js";
 import { resolveProviderFromEnv } from "./provider.js";
 import { loadPolicy, DEFAULT_POLICY } from "./policy.js";
 import { runTurn } from "./loop.js";
@@ -256,11 +257,32 @@ const buildMemoryIfEnabled = async (
  *  on caught exception. */
 const withCommandError = async (
   cmd: string,
+  args: Args,
   fn: () => Promise<number>,
 ): Promise<number> => {
   try {
     return await fn();
   } catch (err) {
+    // Detect AES-GCM key-mismatch and wrap with HARNESS_ENCRYPTION_KEY hint.
+    // Belt-and-suspenders: heuristic is already tight (see util-encryption-error.ts),
+    // but we additionally gate on policy.encryption.enabled so users on
+    // unencrypted banks who hit a coincidental decrypt-shaped error don't
+    // see a key-rotation hint that doesn't apply to them. Policy load
+    // failures fall through to the unwrapped path — bias toward false
+    // negatives per the contract.
+    if (detectEncryptionError(err)) {
+      try {
+        const policyPath = resolvePolicyPath(args.flags);
+        const policy = await loadPolicyOrDefault(policyPath);
+        if (policy.encryption?.enabled === true) {
+          const wrapped = wrapEncryptionError(err, `harness ${cmd}`);
+          process.stderr.write(`${wrapped.message}\n`);
+          return 1;
+        }
+      } catch {
+        // Policy load failed; fall through to default error path.
+      }
+    }
     const msg = (err as Error).message ?? String(err);
     process.stderr.write(`harness ${cmd}: ${msg}\n`);
     return 1;
@@ -1310,36 +1332,36 @@ const main = async (argv: readonly string[]): Promise<number> => {
     case "-v":
       return cmdVersion();
     case "new":
-      return withCommandError("new", () => cmdNew(args));
+      return withCommandError("new", args, () => cmdNew(args));
     case "chat":
-      return withCommandError("chat", () => cmdChat(args));
+      return withCommandError("chat", args, () => cmdChat(args));
     case "resume":
-      return withCommandError("resume", () => cmdResume(args));
+      return withCommandError("resume", args, () => cmdResume(args));
     case "sessions":
-      return withCommandError("sessions", () => cmdSessions(args));
+      return withCommandError("sessions", args, () => cmdSessions(args));
     case "audit":
-      return withCommandError("audit", () => cmdAudit(args));
+      return withCommandError("audit", args, () => cmdAudit(args));
     case "bench":
-      return withCommandError("bench", () => cmdBench(args));
+      return withCommandError("bench", args, () => cmdBench(args));
     case "recall":
-      return withCommandError("recall", () => cmdRecall(args, "recall"));
+      return withCommandError("recall", args, () => cmdRecall(args, "recall"));
     case "search":
       // alias for recall — friendlier name surfaced in HELP.
-      return withCommandError("search", () => cmdRecall(args, "search"));
+      return withCommandError("search", args, () => cmdRecall(args, "search"));
     case "memory":
       switch (args.positional[0]) {
         case "list":
-          return withCommandError("memory list", () => cmdMemoryList(args));
+          return withCommandError("memory list", args, () => cmdMemoryList(args));
         case "forget":
-          return withCommandError("memory forget", () => cmdMemoryForget(args));
+          return withCommandError("memory forget", args, () => cmdMemoryForget(args));
         case "remember":
-          return withCommandError("memory remember", () =>
+          return withCommandError("memory remember", args, () =>
             cmdMemoryRemember(args),
           );
         case "stats":
-          return withCommandError("memory stats", () => cmdMemoryStats(args));
+          return withCommandError("memory stats", args, () => cmdMemoryStats(args));
         case "export":
-          return withCommandError("memory export", () => cmdMemoryExport(args));
+          return withCommandError("memory export", args, () => cmdMemoryExport(args));
         case undefined:
           process.stderr.write(
             "usage: harness memory <list|forget|remember|stats|export>\n",
@@ -1352,13 +1374,13 @@ const main = async (argv: readonly string[]): Promise<number> => {
           return 64;
       }
     case "rekey":
-      return withCommandError("rekey", () => cmdRekey(args));
+      return withCommandError("rekey", args, () => cmdRekey(args));
     case "skills":
       switch (args.positional[0]) {
         case "list":
-          return withCommandError("skills list", () => cmdSkillsList(args));
+          return withCommandError("skills list", args, () => cmdSkillsList(args));
         case "add":
-          return withCommandError("skills add", () => cmdSkillsAdd(args));
+          return withCommandError("skills add", args, () => cmdSkillsAdd(args));
         case undefined:
           process.stderr.write("usage: harness skills <list|add>\n");
           return 64;

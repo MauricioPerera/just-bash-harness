@@ -4,6 +4,24 @@ Notable changes per `keepachangelog.com`. Versions follow semver once a `1.0.0` 
 
 ## [Unreleased]
 
+### CLI: wrap AES-GCM key-mismatch errors with `HARNESS_ENCRYPTION_KEY` hint (ROADMAP §4 P1a #1, issue #16 implementation side)
+
+`harness audit`, `harness chat`, `harness memory list`, and the other read-side commands previously surfaced raw `Unsupported state or unable to authenticate data` (or similar AES-GCM tag-mismatch text) when the user opened an encrypted bank with the wrong `HARNESS_ENCRYPTION_KEY`. Accurate but cryptic — users routinely concluded the bank was corrupt and filed bug reports. The implementation side of harness issue #16 (the documentation side closed v0.3.0) now wraps these errors at the CLI layer with an actionable message that names the env var explicitly and points at `harness rekey` for intentional rotation.
+
+- New module `src/util-encryption-error.ts` exports `detectEncryptionError(err)` and `wrapEncryptionError(err, context)`. The detector matches AES-GCM-specific phrases (`unable to authenticate data`, `authentication tag`, `bad decrypt`) plus a `decrypt` + non-zero-exit-code combo to catch future text drift in `just-bash-data`. Doctrine: bias toward FALSE NEGATIVES so common non-encryption errors (`ENOENT`, `permission denied`, `session not found`) never get the encryption hint by mistake.
+- The detector follows `Error.cause` one level so wrapped errors from outer adapters still get caught.
+- `withCommandError` (the central CLI catch) now takes `args` so it can lazily load the active policy on the error path. Wrapping is gated on `policy.encryption.enabled === true` — defense-in-depth on top of the already-tight heuristic. Policy-load failures fall through to the unwrapped path (false-negative bias).
+- 19 new unit tests in `src/util-encryption-error.test.ts`: positive matches (4 phrase shapes), false-positive guards (ENOENT, permission denied, session-not-found, bare `decrypt` mention), null/undefined input, error-chain via `.cause`, case-insensitivity, wrapper assertions (names env var, mentions `harness rekey`, preserves original via `.cause`, truncates at 200 chars, handles non-Error throws, never echoes a key value).
+- `package.json` test scripts include the new test file.
+- 244/244 tests pass (was 225). Typecheck clean. Build clean.
+- DESIGN §4.4 already documented the failure mode and called the wrapper "tracked as deuda"; that text becomes accurate without rewrite. Decision recorded in `D:/repos/ailibro/CONTRACT-encryption-error-wrapping.md` (READY, no blockers).
+
+#### Invariants touched (per LESSONS doctrine #5)
+
+- `withCommandError(cmd, fn)` → `withCommandError(cmd, args, fn)`. Internal-only signature; all 17 call sites updated in the same commit. No public-API impact (this function is not exported).
+- The error message visible to end-users for AES-GCM key mismatch changes substantially. Programmatic consumers of stderr should not depend on the old text — the exit code (1) is unchanged.
+- Constraint preserved: the wrapper NEVER echoes any portion of `HARNESS_ENCRYPTION_KEY`, even fragments. A user on a shared shell history is protected from key leaks via diagnostic prose. Test `wrapEncryptionError: message does NOT contain the env var's value` enforces this structurally.
+
 ### Suggester pattern blacklist for destructive skills (ROADMAP §2 hard rule, issue #23 Phase 1)
 
 `harness audit --suggest-overrides` no longer proposes destructive skills for promotion to `regular`, regardless of how often the user has approved them. Closes ROADMAP §2's stated hard rule that v0.3.0 acknowledged but did not enforce: a user who routinely approves `delete-workflow` for legitimate cleanup should not have it auto-promoted, because a future LLM-proposed deletion would then execute without prompt.
