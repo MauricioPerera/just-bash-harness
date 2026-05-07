@@ -19,7 +19,7 @@ Built incrementally across versions v0.1.2 → v0.3.0 (see [CHANGELOG.md](CHANGE
 3. **[CHANGELOG.md](CHANGELOG.md)** — historical context. Each version explains a specific design pivot. v0.2.5 → v0.2.6 has the tag/tarball alignment story; v0.3.0 has "Invariants touched" sections per feature (retro-applied per LESSONS doctrine #5).
 4. **[PROVIDERS.md](PROVIDERS.md)** — how to add a new LLM provider. Includes asymmetry table (CF retry hand-rolled vs Anthropic delegated to SDK).
 5. **[TESTING.md](TESTING.md)** — coverage map, what's NOT unit-tested and why. Includes "Live LLM smoke asymmetry" subsection explaining why CF has live smoke and Anthropic deliberately doesn't.
-6. **[LESSONS.md](LESSONS.md)** — operational doctrines distilled from real bugs. Six numbered doctrines as of v0.3.0 + post-publish audits, each anchored to a release that surfaced the pattern.
+6. **[LESSONS.md](LESSONS.md)** — operational doctrines distilled from real bugs. Seven numbered doctrines as of post-v0.3.0 (the seventh added 2026-05-06 from the agentic cycle that processed #19's pre-flight), each anchored to a release that surfaced the pattern.
 7. **[COEVOLUTION.md](COEVOLUTION.md)** — upstream changes proposed; mostly cancelled because the spec already had what was needed.
 
 ## Local development

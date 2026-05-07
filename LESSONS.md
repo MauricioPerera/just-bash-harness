@@ -655,6 +655,82 @@ implemented; tracked as a future improvement.
 
 ---
 
+## 7. Contract pre-flight reads the upstream API, not the contract author's mental model of it
+
+**Origin: post-v0.3.0 unreleased session, 2026-05-06.** Issue #19 (`harness skill init` scaffolder) contract specified three required primitives from `@rckflr/agent-skills-cli`: a "skill scaffold function", a "gitsign per-skill signing function", and a "FileBank subscription function for local skills". The contract instructed the implementing agent to do a pre-flight check before authoring — read the upstream's exports, confirm each primitive exists, decide Path A (workarounds in harness) vs Path B (upstream coordination) per finding.
+
+The pre-flight outcome flatly contradicted one of the three asks. `runInit` and `FileBank.upsertSkill` both existed and were usable. **gitsign per-skill signing did not exist as a primitive — and could not exist cleanly — because the spec's signing model is pack-level GPG-signed annotated git tags via `runPublish --tag --sign`, not per-skill anything.** Asking the harness to "sign a just-scaffolded skill" was a category error against how trust is modeled in the agent-skills ecosystem.
+
+If the implementing agent had skipped the pre-flight and trusted the contract's description, it would have produced code that:
+
+- Shells out to `gitsign` directly (bypassing the upstream's actual signing path).
+- Marks newly-scaffolded skills as `signature_status: "valid"` based on a signing operation that doesn't correspond to anything the spec accepts.
+- Forces every consumer of the new local skill to disable `signature.require_signed` (because the synthetic signature wouldn't verify against any known identity).
+
+Each of those is a real failure mode: the first violates spec, the second falsifies provenance, the third teaches users to disable the security gate. Each is the kind of bug that ships, then quietly weakens the system for a release cycle before someone notices "wait, what does signed mean here, exactly?"
+
+The pre-flight cost: ~10 minutes of `grep` and `head` over `dist/index.d.ts`. It paid for itself before a single line of implementation got written.
+
+### Doctrine
+
+> **When a contract describes upstream primitives by their function rather than by their API surface, the pre-flight is non-optional. Read the upstream's exported types and functions; do not trust the contract author's mental model of what the upstream provides.**
+
+The contract author may be the user, a previous agent, the maintainer themselves, or a planning AI. None of those are authoritative about an upstream's API. The upstream's `index.d.ts` (or equivalent) is. The pre-flight closes the gap.
+
+Three concrete failure modes the doctrine prevents:
+
+1. **The primitive doesn't exist.** Implement against an imagined function, find at integration time it isn't there, scramble. Pre-flight surfaces this as a question the maintainer can answer (workaround vs upstream change) before code lands.
+
+2. **The primitive exists but the spec doesn't model the operation that way.** Per-skill signing in agent-skills is the canonical example: a `runPublishSkill` function COULD exist as a primitive, but the spec doesn't model trust at the per-skill granularity. Implementing it would mean grafting a new trust model onto a system that has its own. The pre-flight catches this kind of model mismatch by reading the actual types — type signatures encode the spec's mental model, and a primitive that "should exist" but doesn't usually doesn't because the spec authors decided not to.
+
+3. **The primitive has a narrower contract than the prose implies.** `SkillProvenance.source_type` is a single-value enum (`"git"` only) in agent-skills 2.3. A contract that says "register a local skill" implies `source_type` could be `"local"` — but reading the type definition shows the enum is closed. The pre-flight produces a workaround (synthetic `local:` URI in the `source` field, keep `source_type: "git"`) and a soft follow-up (extend the enum upstream). Without the pre-flight, the implementing agent would either ship broken code or be confused about why TypeScript rejects it.
+
+### Mechanical pre-flight checklist
+
+For any contract that names upstream primitives:
+
+```bash
+# 1. Locate the upstream's type-declaration file
+PKG=node_modules/@rckflr/agent-skills-cli  # or whichever upstream
+ls "$PKG/dist/index.d.ts"
+
+# 2. For each named primitive in the contract, grep for it
+grep -E "interface RunInitOptions|declare const runInit" "$PKG/dist/index.d.ts"
+
+# 3. If a primitive is named in the contract but absent from the upstream:
+#    - Surface the question to the maintainer
+#    - Decide Path A (harness workaround) vs Path B (upstream change)
+#    - DO NOT proceed to implementation until decided
+
+# 4. If a primitive's TYPE is narrower than the contract assumes
+#    (e.g. enum with one value, optional field marked required):
+#    - Document the workaround explicitly in the implementation
+#    - File a soft follow-up for upstream extension
+#    - Both observations land in the contract's pre-flight outcome section
+```
+
+The pre-flight outcome is a deliverable. It belongs at the top of the contract (section "Pre-flight outcome"), recording what was found and what decision was made. Future readers see both the contract's original asks AND the corrections that pre-flight produced — neither replaces the other; the corrections layer on top with a date and rationale.
+
+### Where this will reappear
+
+Every contract whose scope crosses a repo boundary. Always. Specific cases visible from this codebase:
+
+- **`CONTRACT-mcp-provider.md`** (issue #24, deferred): introduces an MCP provider as second-class citizen. Pre-flight before that ships: read the MCP TypeScript SDK's actual exports, confirm what "second-class" maps to in their API, decide whether the harness adapts to their model or vice-versa.
+
+- **Future `ops-essentials@v1` follow-up packs** (`ops-mutations@v1`, `ops-postgres@v1`, etc.): each pack's contract will name agent-skills-cli primitives. Pre-flight on each: confirm the spec version locks, confirm the chains-step types haven't drifted, confirm the bench-truth shape is unchanged.
+
+- **Any `harness X` subcommand that reuses upstream primitives**: `harness skills publish` (eventually), `harness bench --against-cdn` (hypothetical), etc. Pre-flight before authoring the implementation contract.
+
+The pattern generalizes beyond agent-skills-cli specifically. When the contract says "use Anthropic's batch API" or "use the Cloudflare R2 bindings", the pre-flight is the same: read their type declarations, don't trust the contract's prose summary.
+
+### Note on this entry's own scope
+
+This doctrine is conservative: it only fires when a contract NAMES upstream primitives. A contract that says "implement X using whatever upstream offers" is operating under different assumptions and a different doctrine (probably one about scoping). This doctrine is for the case where the contract author has a specific upstream API in mind and is asking the implementing agent to use it.
+
+The doctrine does NOT mandate reading every line of the upstream's source. Only the type declarations relevant to the named primitives. Reading too much upstream is its own form of waste; the pre-flight is targeted, not exhaustive.
+
+---
+
 ## How to add to this file
 
 A new entry is justified when:
