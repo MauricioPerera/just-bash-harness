@@ -2,7 +2,7 @@
 
 Single-agent loop on top of [`just-bash`](https://github.com/vercel-labs/just-bash) and the [`agent-skills`](https://github.com/MauricioPerera/agent-skills) ecosystem. Sandboxed tool execution, derived approval gates, persisted sessions, swappable LLM providers.
 
-**Version:** 0.3.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction (with optional rolling LLM summary) + AES-256-GCM at rest **(opt-in via `policy.encryption.enabled`, default `false`)** with `harness rekey` rotation + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + Hermes parser w/ diagnostics + AbortSignal propagation + per-tool-call rationale + secret redaction at persistence boundaries (Phase 1 conservative patterns) + approval-fatigue metrics + Cloudflare provider rate-limit + backoff. 195/195 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry (binary on PATH: `harness`).
+**Version:** 0.3.0 · **Status:** v0 contract complete + packaged + CI'd + polished + applicable_when filter + cross-session memory + search/stats/export + compaction (with optional rolling LLM summary) + AES-256-GCM at rest **(opt-in via `policy.encryption.enabled`, default `false`)** with `harness rekey` rotation + retrieval bench + interactive REPL + chains (with chain-aware approval, no bypass) + Hermes parser w/ diagnostics + AbortSignal propagation + per-tool-call rationale + secret redaction at persistence boundaries (Phase 1 conservative patterns) + approval-fatigue metrics + Cloudflare provider rate-limit + backoff. **Post-v0.3.0 unreleased**: `harness do "<task>"` one-shot ops mode, `harness skill init` local-skill scaffolder, suggester destructive-pattern blacklist (Phase 1), AES-GCM key-mismatch error wrapping. 258/258 unit tests pass. End-to-end validated against real Gemma 4 26B and Hermes 2 Pro on Cloudflare Workers AI subscribing the public `agent-skills-pack@v2.2.0`. Published as `just-bash-harness` on the npm registry (binary on PATH: `harness`).
 
 ## Intended audience
 
@@ -217,11 +217,11 @@ The skills `FileBank` and the session bank live on **separate dirs**. They never
 
 ## Testing
 
-As of v0.3.0: **195 unit tests across 12 test files** (all PASS, ~30-60s) plus **9 smoke / integration scripts** in `scratch/`. See [TESTING.md](TESTING.md) for the full coverage matrix per module.
+As of v0.3.0 + post-v0.3.0 unreleased work: **258 unit tests across 15 test files** (all PASS, ~30-60s) plus **10 smoke / integration scripts** wired in CI. See [TESTING.md](TESTING.md) for the full coverage matrix per module.
 
 | Layer | Tests | Where |
 |---|---|---|
-| Unit | 195 in 12 suites | `src/*.test.ts` |
+| Unit | 258 in 15 suites | `src/*.test.ts` |
 | Integration — FileBank + runExec round-trip | 4-step PASS | `scratch/slice.ts` |
 | Integration — full loop, scripted provider | 5-scenario PASS | `scratch/e2e.ts` |
 | Integration — Gemma decisions replayed | 1 PASS | `scratch/e2e-cf-driven.ts` |
@@ -231,6 +231,8 @@ As of v0.3.0: **195 unit tests across 12 test files** (all PASS, ~30-60s) plus *
 | Integration — chains (multi-skill orchestration) | 8 PASS | `scratch/live-test-chains.ts` |
 | Integration — Hermes inline `<tool_call>` parser | 5 PASS | `scratch/live-test-hermes.ts` *(replays a captured SSE stream — NOT a live LLM call)* |
 | Integration — summarize=false regression guard | 4 PASS | `scratch/live-test-summarize-disabled.ts` |
+| Integration — chain-union approval gate | PASS | `scratch/live-test-chain-approval.ts` |
+| Integration — real public pack subscription | manual | `scratch/live-test-real-pack.ts` *(network; not in CI)* |
 | Live LLM (CF, real fetch) | opt-in | `scratch/e2e-cloudflare.ts` *(requires `CF_ACCOUNT_ID` + `CF_API_TOKEN`)* |
 
 **On the "live" distinction:** `live-test-hermes.ts` and `e2e-cf-driven.ts` are NOT live LLM calls — they replay deterministic streams captured at design time. They are categorized as "Integration" above, not "Live LLM". The only live-LLM smoke is `e2e-cloudflare.ts`, which is opt-in and requires real Cloudflare credentials. No live Anthropic smoke exists by design — see [TESTING.md "Live LLM smoke asymmetry"](TESTING.md) for the rationale.

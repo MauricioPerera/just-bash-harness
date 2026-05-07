@@ -1,25 +1,28 @@
 # Testing
 
-What's tested, what isn't, and why. As of v0.3.0 + post-publish coverage work: **212/212 unit tests pass** in ~30-60s (203 + 9 more in `rekey.test.ts` covering `parseDuration` + `cleanupBackups` per issue #15), plus a growing set of integration smokes covering the layers a unit suite can't reach (now including `live-test-chain-approval.ts` per issue #6 and an extended `live-test-encryption.ts` covering both memory AND sessions banks per issue #7).
+What's tested, what isn't, and why. As of v0.3.0 + post-v0.3.0 unreleased work: **258/258 unit tests pass** in ~30-60s, plus a growing set of integration smokes covering the layers a unit suite can't reach (including `live-test-chain-approval.ts` per issue #6 and an extended `live-test-encryption.ts` covering both memory AND sessions banks per issue #7).
 
 ## Layout
 
 ```
 src/
-  cli-args.test.ts             12 tests   argv parser
+  cli-args.test.ts             18 tests   argv parser (incl. `harness do` shapes — issue #21)
   approval.test.ts             26 tests   deriveCategory + gate + chain union + unknown-step worst-case
-  approval-stats.test.ts        8 tests   per-skill counters + suggestion threshold logic + YAML render
+  approval-stats.test.ts       21 tests   per-skill counters + suggestion threshold + destructive blacklist (issue #23 Phase 1)
   loop.test.ts                  7 tests   runCompactionSummary input shape + truncation + stop semantics
+  memory.test.ts               12 tests   wiki-backed Memory: recall, persist, filters, charBudget
   policy.test.ts               10 tests   YAML loader + DEFAULT_POLICY
   policy-overrides.test.ts      5 tests   --allow-unsigned policy mutation
   provider.test.ts             12 tests   resolveProviderFromEnv factory
   provider-anthropic.test.ts   30 tests   helpers + construction + fetch failure surface
   provider-cloudflare.test.ts  49 tests   request + SSE + tool calls + Hermes parser + retry policy
   redact.test.ts               15 tests   pattern coverage + false-positive resistance
+  rekey.test.ts                17 tests   parseDuration + cleanupBackups (issue #15)
+  skill-init.test.ts            8 tests   harness skill init scaffolder + bank subscribe (issue #19 Phase 1)
   toolbox.test.ts               9 tests   applicable_when filter
-  memory.test.ts               12 tests   wiki-backed Memory: recall, persist, filters, charBudget
+  util-encryption-error.test.ts 19 tests  AES-GCM key-mismatch detection + wrap (issue #18)
                               ─────────
-                             195 tests
+                             258 tests
 scratch/
   slice.ts                     4-step    FileBank + runQuery + runExec + db export
   e2e.ts                       5-scenario  full loop with scripted provider
@@ -30,6 +33,9 @@ scratch/
   live-test-encryption.ts      4 PASS    AES-256-GCM at rest verified at the bytes level
   live-test-chains.ts          8 PASS    spec §2.8 chains with output_var substitution
   live-test-hermes.ts          5 PASS    captured Hermes 2 Pro SSE stream replayed
+  live-test-chain-approval.ts  PASS      union-of-categories approval gate (issue #6)
+  live-test-summarize-disabled.ts 4 PASS regression guard for compaction.summarize=false
+  live-test-real-pack.ts       manual    end-to-end real public pack subscription (network; not in CI)
 ```
 
 ## Running

@@ -27,7 +27,7 @@ Built incrementally across versions v0.1.2 → v0.3.0 (see [CHANGELOG.md](CHANGE
 ```bash
 npm install                          # ~5 min cold (deps from npm registry since v0.2.6)
 npm run typecheck                    # always green
-npm run test                         # 195/195 unit tests, ~30-60s
+npm run test                         # 258/258 unit tests, ~30-60s
 npm run dev -- --help                # tsx, no build needed
 npm run build                        # tsup → dist/cli.js + dist/index.js
 node dist/cli.js --help              # built bin
@@ -37,6 +37,7 @@ npm run smoke:slice                  # FileBank + runQuery + runExec
 npm run smoke:e2e                    # 5 approval scenarios scripted
 npm run smoke:cf-driven              # Gemma-replayed end-to-end
 npm run smoke:summarize-disabled     # regression guard for compaction.summarize=false
+npm run smoke:chain-approval         # union-of-categories approval gate (chain skills)
 
 # Plus 5 more live-test smokes wired in CI:
 #   live-test-memory.ts          cross-session memory recall
@@ -44,6 +45,9 @@ npm run smoke:summarize-disabled     # regression guard for compaction.summarize
 #   live-test-encryption.ts      AES-256-GCM at rest verified at the bytes level
 #   live-test-chains.ts          chains (multi-skill orchestration)
 #   live-test-hermes.ts          Hermes <tool_call> parser via captured SSE replay
+
+# Plus 1 manual smoke not run in CI (subscribes a real public pack):
+#   live-test-real-pack.ts       end-to-end pack subscription via runSync
 
 # Smokes requiring live network/creds (manual, NOT in CI)
 npm run smoke:cf-live                # CF_ACCOUNT_ID + CF_API_TOKEN
@@ -78,21 +82,24 @@ src/
   redact.ts                 secret pattern scrubbing (Phase 1) at persistence boundaries
   rekey.ts                  harness rekey command — encryption key rotation per bank
   util-escape.ts            single source of truth for escSingle
+  util-encryption-error.ts  CLI error wrapper for AES-GCM key-mismatch (issue #18)
+  skill-init.ts             harness skill init scaffolder (issue #19 Phase 1)
   cli.ts                    entry point — bin: harness
   cli-args.ts               argv parser (extracted for testability)
   index.ts                  public library API
-  *.test.ts                 12 test files, 195 unit tests total (cli-args, approval,
-                            approval-stats, loop, policy, policy-overrides, provider,
-                            provider-anthropic, provider-cloudflare, redact, toolbox, memory)
+  *.test.ts                 15 test files, 258 unit tests total (cli-args, approval,
+                            approval-stats, loop, memory, policy, policy-overrides,
+                            provider, provider-anthropic, provider-cloudflare, redact,
+                            rekey, skill-init, toolbox, util-encryption-error)
 scratch/
   slice.ts                  smoke: FileBank + runExec + audit + db export
   e2e.ts                    smoke: 5 approval scenarios w/ scripted provider
   e2e-cf-driven.ts          smoke: real Gemma decisions replayed
   e2e-cloudflare.ts         opt-in: live CF (needs creds)
   live-test-*.ts            memory / compaction / encryption / chains / hermes /
-                            summarize-disabled smokes
+                            summarize-disabled / chain-approval / real-pack smokes
   wiki-prototype.ts         reference for direct just-bash-wiki usage
-.github/workflows/ci.yml    typecheck + tests + build + 9 smokes (every push, every PR)
+.github/workflows/ci.yml    typecheck + tests + build + 10 smokes (every push, every PR)
 ```
 
 ## Things that look weird but are intentional
